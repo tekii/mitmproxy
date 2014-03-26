@@ -91,6 +91,8 @@ class ConnectionHandler:
 
             # FIXME: Do we want to persist errors?
             except (ProxyError, tcp.NetLibError, IOError), e:
+                import traceback
+                traceback.print_exc()
                 handle_error(self.conntype, self, e)
         except Exception, e:
             import traceback, sys

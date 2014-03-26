@@ -927,6 +927,8 @@ class HTTPHandler(ProtocolHandler, TemporaryServerChangeMixin):
                                    # restore the original target server
             return True
         except (HttpAuthenticationError, http.HttpError, proxy.ProxyError, tcp.NetLibError), e:
+            import traceback
+            traceback.print_exc()
             self.handle_error(e, flow)
         return False
 
