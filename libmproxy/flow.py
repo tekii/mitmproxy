@@ -16,6 +16,11 @@ CONTENT_MISSING = 0
 ODict = odict.ODict
 ODictCaseless = odict.ODictCaseless
 
+SCENARIO_KEY = "SCENARIO"
+MAIN_SCENARIO = "MAIN"
+
+Scenario = MAIN_SCENARIO
+
 
 class AppRegistry:
     def __init__(self):
@@ -37,7 +42,6 @@ class AppRegistry:
         if "host" in request.headers:
             host = request.headers["host"][0]
             return self.apps.get((host, request.port), None)
-
 
 class ReplaceHooks:
     def __init__(self):
@@ -943,12 +947,12 @@ class ClientPlaybackState:
 
 
 class ServerPlaybackState:
-    def __init__(self, headers, flows, exit, nopop, ignore_params, ignore_content):
+    def __init__(self, headers, flows, exit, nopop, ignore_params, ignore_content, enable_scenarios):
         """
             headers: Case-insensitive list of request headers that should be
             included in request-response matching.
         """
-        self.headers, self.exit, self.nopop, self.ignore_params, self.ignore_content = headers, exit, nopop, ignore_params, ignore_content 
+        self.headers, self.exit, self.nopop, self.ignore_params, self.ignore_content, self.enable_scenarios = headers, exit, nopop, ignore_params, ignore_content, enable_scenarios
         self.fmap = {}
         for i in flows:
             if i.response:
@@ -986,15 +990,23 @@ class ServerPlaybackState:
             key.append(p[0])
             key.append(p[1])
 
+        h = []
         if self.headers:
+            h = self.headers    
+        if self.enable_scenarios: 
+            if not SCENARIO_KEY in h:
+                h.append(SCENARIO_KEY)
+
+        if len(h) > 0:
             hdrs = []
-            for i in self.headers:
+            for i in h:
                 v = r.headers[i]
                 # Slightly subtle: we need to convert everything to strings
                 # to prevent a mismatch between unicode/non-unicode.
                 v = [str(x) for x in v]
                 hdrs.append((i, v))
             key.append(repr(hdrs))
+
         return hashlib.sha256(repr(key)).digest()
 
     def next_flow(self, request):
@@ -1469,7 +1481,7 @@ class FlowMaster(controller.Master):
     def stop_client_playback(self):
         self.client_playback = None
 
-    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content):
+    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content, enable_scenarios):
         """
             flows: List of flows.
             kill: Boolean, should we kill requests not part of the replay?
@@ -1477,7 +1489,7 @@ class FlowMaster(controller.Master):
             ignore_content: true if request content should be ignored in server replay
             not_found: return 404 instead of go for the page for filtered traffic in server replay
         """
-        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content)
+        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, enable_scenarios)
         self.kill_nonreplay = kill
 
     def stop_server_playback(self):
@@ -1525,7 +1537,6 @@ class FlowMaster(controller.Master):
             return True
         return None
 
-
     def tick(self, q):
         if self.client_playback:
             e = [
@@ -1569,20 +1580,24 @@ class FlowMaster(controller.Master):
             self.stickycookie_state.handle_request(f)
         if self.stickyauth_state:
             self.stickyauth_state.handle_request(f)
-
         if self.anticache:
             f.request.anticache()
         if self.anticomp:
             f.request.anticomp()
         if self.server_playback:
+            # try current scenario
             pb = self.do_server_playback(f)
             if not pb:
-                if self.kill_nonreplay:
-                    f.kill(self)
-                elif self.not_found_filt and f.match(self.not_found_filt):
-                    self.return_not_found(f)
-                else:
-                    f.request.reply()
+                #try main scenario
+                f.request.headers[SCENARIO_KEY]=[MAIN_SCENARIO]
+                pb = self.do_server_playback(f)
+                if not pb:
+                    if self.kill_nonreplay:
+                        f.kill(self)
+                    elif self.not_found_filt and f.match(self.not_found_filt):
+                        self.return_not_found(f)
+                    else:
+                        f.request.reply()
 
     def process_new_response(self, f):
         if self.stickycookie_state:
@@ -1639,6 +1654,7 @@ class FlowMaster(controller.Master):
         return f
 
     def handle_request(self, r):
+        r.headers[SCENARIO_KEY] = [Scenario]
         if r.is_live():
             app = self.apps.get(r)
             if app:
@@ -1734,6 +1750,7 @@ class FilteredFlowWriter:
     def add(self, f):
         if self.filt and not f.match(self.filt):
             return
+        f.request.headers[SCENARIO_KEY]=[Scenario]
         d = f._get_state()
         tnetstring.dump(d, self.fo)
 
