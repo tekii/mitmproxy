@@ -151,6 +151,7 @@ def get_common_options(options):
         wfile = options.wfile,
         verbosity = options.verbose,
         nopop = options.nopop,
+        enable_scenarios = options.enable_scenarios
     )
 
 
@@ -259,7 +260,11 @@ def common_options(parser):
         action="store_true", dest="no_upstream_cert",
         help="Don't connect to upstream server to look up certificate details."
     )
-
+    parser.add_argument(
+        "--enable-scenarios", default=False,
+        action="store_true", dest="enable_scenarios",
+        help="Enable scenario support"
+    )
     group = parser.add_argument_group("Web App")
     group.add_argument(
         "-a",

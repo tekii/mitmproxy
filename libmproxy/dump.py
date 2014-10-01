@@ -33,7 +33,8 @@ class Options(object):
         "wfile",
         "replay_ignore_content",
         "replay_ignore_params",
-        "replay_not_found"
+        "replay_not_found",
+        "enable_scenarios"
     ]
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -109,7 +110,8 @@ class DumpMaster(flow.FlowMaster):
                 not options.keepserving,
                 options.nopop,
                 options.replay_ignore_params,
-                options.replay_ignore_content
+                options.replay_ignore_content,
+                options.enable_scenarios
             )
 
         if options.client_replay:
