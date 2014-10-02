@@ -996,7 +996,6 @@ class ServerPlaybackState:
         if self.enable_scenarios: 
             if not SCENARIO_KEY in h:
                 h.append(SCENARIO_KEY)
-
         if len(h) > 0:
             hdrs = []
             for i in h:
@@ -1403,6 +1402,7 @@ class FlowMaster(controller.Master):
         self.apps = AppRegistry()
 
         self.not_found_filt = None        
+        self.enable_scenarios = None
 
     def start_app(self, host, port, external):
         if not external:
@@ -1491,6 +1491,7 @@ class FlowMaster(controller.Master):
         """
         self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, enable_scenarios)
         self.kill_nonreplay = kill
+        self.enable_scenarios = enable_scenarios
 
     def stop_server_playback(self):
         if self.server_playback.exit:
@@ -1505,7 +1506,11 @@ class FlowMaster(controller.Master):
         if self.server_playback:
             rflow = self.server_playback.next_flow(flow)
             if not rflow:
-                return None
+                #if not found in current scenario try in main scuenario
+                flow.request.headers[SCENARIO_KEY]=[MAIN_SCENARIO]
+                rflow = self.server_playback.next_flow(flow)
+                if not rflow:
+                    return None
             response = Response._from_state(flow.request, rflow.response._get_state())
             response._set_replay()
             flow.response = response
@@ -1585,19 +1590,14 @@ class FlowMaster(controller.Master):
         if self.anticomp:
             f.request.anticomp()
         if self.server_playback:
-            # try current scenario
             pb = self.do_server_playback(f)
             if not pb:
-                #try main scenario
-                f.request.headers[SCENARIO_KEY]=[MAIN_SCENARIO]
-                pb = self.do_server_playback(f)
-                if not pb:
-                    if self.kill_nonreplay:
-                        f.kill(self)
-                    elif self.not_found_filt and f.match(self.not_found_filt):
-                        self.return_not_found(f)
-                    else:
-                        f.request.reply()
+                if self.kill_nonreplay:
+                    f.kill(self)
+                elif self.not_found_filt and f.match(self.not_found_filt):
+                    self.return_not_found(f)
+                else:
+                    f.request.reply()
 
     def process_new_response(self, f):
         if self.stickycookie_state:
@@ -1654,7 +1654,8 @@ class FlowMaster(controller.Master):
         return f
 
     def handle_request(self, r):
-        r.headers[SCENARIO_KEY] = [Scenario]
+        if self.enable_scenarios:
+            r.headers[SCENARIO_KEY] = [Scenario]
         if r.is_live():
             app = self.apps.get(r)
             if app:
