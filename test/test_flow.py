@@ -766,6 +766,69 @@ class TestFlowMaster:
         fm.stop_server_playback()
         assert not fm.server_playback
 
+
+    def test_server_playback_scenario(self):
+        controller.should_exit = False
+        s = flow.State()
+
+        # in main scenario
+        #asking for a flow that is in main scenario is ok
+        f = tutils.tflow()
+        f.request.headers[flow.SCENARIO_KEY] = [flow.MAIN_SCENARIO]
+        f.response = tutils.tresp(f.request)
+        pb = [f]
+        
+        fm = flow.FlowMaster(None, s)
+        fm.refresh_server_playback = True
+        fm.start_server_playback(pb, False, [], False, False, None, False, True)
+        f2 = tutils.tflow()
+        f2.request.headers[flow.SCENARIO_KEY] = [flow.MAIN_SCENARIO]
+        assert fm.do_server_playback(f2)
+
+        # in main scenario       
+        #asking for a flow that is in alternate scenario will not playback
+        f = tutils.tflow()        
+        f.request.headers[flow.SCENARIO_KEY] = ["alternate"]
+        f.response = tutils.tresp(f.request)
+        pb = [f]
+        
+        fm = flow.FlowMaster(None, s)
+        fm.refresh_server_playback = True
+        fm.start_server_playback(pb, False, [], False, False, None, False, True)
+        f2 = tutils.tflow()
+        f2.request.headers[flow.SCENARIO_KEY] = [flow.MAIN_SCENARIO]
+        assert not fm.do_server_playback(f2)
+
+        # in altern scenario
+        #asking for a flow that is in alternate scenario is ok
+        f = tutils.tflow()        
+        f.request.headers[flow.SCENARIO_KEY] = ["alternate"]
+        f.response = tutils.tresp(f.request)
+        pb = [f]
+        
+        fm = flow.FlowMaster(None, s)
+        fm.refresh_server_playback = True
+        fm.start_server_playback(pb, False, [], False, False, None, False, True)
+        f2 = tutils.tflow()
+        f2.request.headers[flow.SCENARIO_KEY] = ["alternate"]
+        assert fm.do_server_playback(f2)
+
+
+        # in altern scenario
+        #asking for a flow that is in main scenario is ok
+        f = tutils.tflow()        
+        f.request.headers[flow.SCENARIO_KEY] = [flow.MAIN_SCENARIO]
+        f.response = tutils.tresp(f.request)
+        pb = [f]
+        
+        fm = flow.FlowMaster(None, s)
+        fm.refresh_server_playback = True
+        fm.start_server_playback(pb, False, [], False, False, None, False, True)
+        f2 = tutils.tflow()
+        f2.request.headers[flow.SCENARIO_KEY] = ["MAIN_SCENARIO"]
+        assert fm.do_server_playback(f2)
+
+
     def test_server_playback_kill(self):
         s = flow.State()
         f = tutils.tflow()
@@ -814,6 +877,31 @@ class TestFlowMaster:
         tf = tf.copy()
         fm.handle_request(tf.request)
         assert tf.request.headers["cookie"] == ["foo=bar"]
+
+    def test_handle_request_sets_scenario(self):
+        # By default without enable_scenarios header will not be added 
+        s = flow.State()
+        fm = flow.FlowMaster(None, s)
+        tf = tutils.tflow_full()
+        fm.handle_request(tf.request)
+        assert not tf.request.headers[flow.SCENARIO_KEY] 
+
+        # By default with enable_scenarios scenario is MAIN
+        s = flow.State()
+        fm = flow.FlowMaster(None, s)
+        fm.enable_scenarios = True
+        tf = tutils.tflow_full()
+        fm.handle_request(tf.request)
+        assert tf.request.headers[flow.SCENARIO_KEY] == [flow.MAIN_SCENARIO]
+        
+        # now setting a scenario
+        s = flow.State()
+        fm = flow.FlowMaster(None, s)
+        fm.enable_scenarios = True        
+        tf = tutils.tflow_full()
+        flow.Scenario="scn1"
+        fm.handle_request(tf.request)
+        assert tf.request.headers[flow.SCENARIO_KEY] == ["scn1"]
 
     def test_stickyauth(self):
         s = flow.State()
