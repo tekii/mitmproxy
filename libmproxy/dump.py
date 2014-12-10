@@ -35,6 +35,7 @@ class Options(object):
         "replay_ignore_params",
         "replay_not_found",
         "enable_scenarios"
+        "append"
     ]
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -90,7 +91,11 @@ class DumpMaster(flow.FlowMaster):
         if options.wfile:
             path = os.path.expanduser(options.wfile)
             try:
-                f = file(path, "wb")
+                if (options.append):
+                    f = file(path, "ab")
+                else:
+                    f = file(path, "wb")
+                    
                 self.start_stream(f, self.filt)
             except IOError, v:
                 raise DumpError(v.strerror)
