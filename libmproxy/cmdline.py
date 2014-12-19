@@ -184,7 +184,8 @@ def get_common_options(options):
         nopop=options.nopop,
         replay_ignore_content = options.replay_ignore_content,
         replay_ignore_params = options.replay_ignore_params,
-        replay_ignore_payload_params = options.replay_ignore_payload_params
+        replay_ignore_payload_params = options.replay_ignore_payload_params,
+        enable_scenarios = options.enable_scenarios        
     )
 
 
@@ -438,6 +439,11 @@ def common_options(parser):
         action="store_true", dest="nopop", default=False,
         help="Disable response pop from response flow. "
              "This makes it possible to replay same response multiple times."
+    )
+    group.add_argument(
+        "--enable-scenarios", default=False,
+        action="store_true", dest="enable_scenarios",
+        help="Enable scenario support"
     )
     payload = group.add_mutually_exclusive_group()
     payload.add_argument(

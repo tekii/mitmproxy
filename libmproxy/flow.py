@@ -18,6 +18,11 @@ import urlparse
 ODict = odict.ODict
 ODictCaseless = odict.ODictCaseless
 
+SCENARIO_KEY = "SCENARIO"
+MAIN_SCENARIO = "MAIN"
+
+Scenario = MAIN_SCENARIO
+
 
 class AppRegistry:
     def __init__(self):
@@ -201,12 +206,12 @@ class ClientPlaybackState:
 
 
 class ServerPlaybackState:
-    def __init__(self, headers, flows, exit, nopop, ignore_params, ignore_content, ignore_payload_params):
+    def __init__(self, headers, flows, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios):
         """
             headers: Case-insensitive list of request headers that should be
             included in request-response matching.
         """
-        self.headers, self.exit, self.nopop, self.ignore_params, self.ignore_content, self.ignore_payload_params = headers, exit, nopop, ignore_params, ignore_content, ignore_payload_params
+        self.headers, self.exit, self.nopop, self.ignore_params, self.ignore_content, self.ignore_payload_params, self.enable_scenarios = headers, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios
         self.fmap = {}
         for i in flows:
             if i.response:
@@ -260,9 +265,15 @@ class ServerPlaybackState:
             key.append(p[0])
             key.append(p[1])
 
+        h = [] 
         if self.headers:
+            h = self.headers    
+        if self.enable_scenarios: 
+            if not SCENARIO_KEY in h:
+                h.append(SCENARIO_KEY)
+        if len(h) > 0:
             hdrs = []
-            for i in self.headers:
+            for i in h:
                 v = r.headers[i]
                 # Slightly subtle: we need to convert everything to strings
                 # to prevent a mismatch between unicode/non-unicode.
@@ -619,8 +630,22 @@ class FlowMaster(controller.Master):
 
         self.stream = None
         self.apps = AppRegistry()
+        self.enable_scenarios = None
+
+    @app.mapp.route("/scenario/")
+    @app.mapp.route("/scenario/<name>")
+    def scenario(name=None):
+        if name:
+            flow.Scenario = str(name)
+        else: 
+            flow.Scenario = flow.MAIN_SCENARIO
+        return flask.render_template("scenario.html", scenario=flow.Scenario)
 
     def start_app(self, host, port):
+
+        # add scenario stuff here
+        #
+
         self.apps.add(
             app.mapp,
             host,
@@ -712,15 +737,16 @@ class FlowMaster(controller.Master):
     def stop_client_playback(self):
         self.client_playback = None
 
-    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content, ignore_payload_params):
+    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios):
         """
             flows: List of flows.
             kill: Boolean, should we kill requests not part of the replay?
             ignore_params: list of parameters to ignore in server replay
             ignore_content: true if request content should be ignored in server replay
         """
-        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, ignore_payload_params)
+        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios)
         self.kill_nonreplay = kill
+        self.enable_scenarios = enable_scenarios
 
     def stop_server_playback(self):
         if self.server_playback.exit:
@@ -735,7 +761,11 @@ class FlowMaster(controller.Master):
         if self.server_playback:
             rflow = self.server_playback.next_flow(flow)
             if not rflow:
-                return None
+                #if not found in current scenario try in main scuenario
+                flow.request.headers[SCENARIO_KEY]=[MAIN_SCENARIO]
+                rflow = self.server_playback.next_flow(flow)
+                if not rflow:
+                    return None
             response = http.HTTPResponse.from_state(rflow.response.get_state())
             response.is_replay = True
             if self.refresh_server_playback:
@@ -863,6 +893,8 @@ class FlowMaster(controller.Master):
         return f
 
     def handle_request(self, f):
+        if self.enable_scenarios:
+            f.request.headers[SCENARIO_KEY] = [Scenario]        
         if f.live:
             app = self.apps.get(f.request)
             if app:
@@ -972,5 +1004,6 @@ class FilteredFlowWriter:
     def add(self, f):
         if self.filt and not f.match(self.filt):
             return
+        f.request.headers[SCENARIO_KEY]=[Scenario]
         d = f.get_state()
         tnetstring.dump(d, self.fo)

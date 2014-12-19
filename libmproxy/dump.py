@@ -40,6 +40,7 @@ class Options(object):
         "replay_ignore_content",
         "replay_ignore_params",
         "replay_ignore_payload_params",
+        "enable_scenarios",
     ]
 
     def __init__(self, **kwargs):
@@ -119,6 +120,7 @@ class DumpMaster(flow.FlowMaster):
                 options.replay_ignore_params,
                 options.replay_ignore_content,
                 options.replay_ignore_payload_params,
+                options.enable_scenarios
             )
 
         if options.client_replay:
