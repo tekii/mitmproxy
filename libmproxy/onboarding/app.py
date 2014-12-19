@@ -29,9 +29,9 @@ def certs_p12():
 
 # @mapp.route("/scenario/")
 # @mapp.route("/scenario/<name>")
-# def scenario(name=None):
+def scenario(sc):
     # if name:
       #   flow.Scenario = str(name)
     # else: 
       #   flow.Scenario = flow.MAIN_SCENARIO
-    # return flask.render_template("scenario.html", scenario=flow.Scenario)
+    return flask.render_template("scenario.html", scenario=sc)

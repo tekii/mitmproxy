@@ -14,6 +14,7 @@ from .onboarding import app
 from .protocol import http, handle
 from .proxy.config import HostMatcher
 import urlparse
+import flask
 
 ODict = odict.ODict
 ODictCaseless = odict.ODictCaseless
@@ -636,10 +637,11 @@ class FlowMaster(controller.Master):
     @app.mapp.route("/scenario/<name>")
     def scenario(name=None):
         if name:
-            flow.Scenario = str(name)
+            Scenario = str(name)
         else: 
-            flow.Scenario = flow.MAIN_SCENARIO
-        return flask.render_template("scenario.html", scenario=flow.Scenario)
+            Scenario = MAIN_SCENARIO
+        return app.scenario(Scenario)
+        #return flask.render_template("onboarding/templates/scenario.html", scenario=Scenario)
 
     def start_app(self, host, port):
 
