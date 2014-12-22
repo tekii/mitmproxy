@@ -185,6 +185,7 @@ def get_common_options(options):
         replay_ignore_content = options.replay_ignore_content,
         replay_ignore_params = options.replay_ignore_params,
         replay_ignore_payload_params = options.replay_ignore_payload_params,
+        replay_not_found = options.replay_not_found,
         enable_scenarios = options.enable_scenarios        
     )
 
@@ -470,6 +471,13 @@ def common_options(parser):
             Request's parameters to be ignored while searching for a saved flow
             to replay. Can be passed multiple times.
         """
+    )
+
+    group.add_argument(
+        "--replay-not-found",
+        action="append", dest="replay_not_found", type=str,
+        help="Make the proxy return 404 (not found) if a request matching filters is not found in saved flows"
+           "Can be passed multiple times."
     )
 
     group = parser.add_argument_group(

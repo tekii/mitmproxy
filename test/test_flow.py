@@ -878,6 +878,21 @@ class TestFlowMaster:
         fm.process_new_request(f)
         assert "killed" in f.error.msg
 
+    def test_server_playback_return_not_found(self):
+        s = flow.State()
+        f = tutils.tflow(resp=True)
+        #f.response = tutils.tresp(f.request)
+        pb = [f]
+        fm = flow.FlowMaster(None, s)
+        fm.refresh_server_playback = True
+        fm.start_server_playback(pb, False, [], False, False, None, False, None, False)
+        fm.not_found_filt = filt.parse("~d www.example.org")
+
+        f = tutils.tflow(resp=True)
+        f.request.host = "www.example.org"
+        fm.process_new_request(f)
+        assert 404 == f.response.code
+
     def test_stickycookie(self):
         s = flow.State()
         fm = flow.FlowMaster(None, s)

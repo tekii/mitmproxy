@@ -13,6 +13,7 @@ from . import controller, protocol, tnetstring, filt, script, version
 from .onboarding import app
 from .protocol import http, handle
 from .proxy.config import HostMatcher
+from libmproxy.protocol.http import HTTPResponse
 import urlparse
 import flask
 
@@ -627,7 +628,7 @@ class FlowMaster(controller.Master):
         self.setheaders = SetHeaders()
         self.replay_ignore_params = False
         self.replay_ignore_content = None
-
+        self.not_found_filt = None
 
         self.stream = None
         self.apps = AppRegistry()
@@ -778,6 +779,22 @@ class FlowMaster(controller.Master):
             return True
         return None
 
+    def return_not_found(self, flow):
+        """
+            This method should be called by child classes in the handle_request
+            handler. Returns a hardcoded 404
+        """
+        if self.server_playback:
+            response = HTTPResponse([1,1],
+                        404, "Not found",
+                        ODictCaseless([["Content-Type","text/html"]]),
+                        "Not Found")
+            response.is_replay = True
+            flow.response = response
+            flow.reply(response)
+            return True
+        return None
+
     def tick(self, q, timeout):
         if self.client_playback:
             e = [
@@ -836,6 +853,8 @@ class FlowMaster(controller.Master):
             if not pb:
                 if self.kill_nonreplay:
                     f.kill(self)
+                elif self.not_found_filt and f.match(self.not_found_filt):
+                    self.return_not_found(f)
                 else:
                     f.reply()
 

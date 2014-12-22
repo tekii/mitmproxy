@@ -40,6 +40,7 @@ class Options(object):
         "replay_ignore_content",
         "replay_ignore_params",
         "replay_ignore_payload_params",
+        "replay_not_found",
         "enable_scenarios",
     ]
 
@@ -81,6 +82,11 @@ class DumpMaster(flow.FlowMaster):
         self.replay_ignore_content = options.replay_ignore_content
         self.refresh_server_playback = options.refresh_server_playback
         self.replay_ignore_payload_params = options.replay_ignore_payload_params
+
+        if options.replay_not_found:
+            self.replay_not_found = " ".join(options.replay_not_found) 
+        else:
+            self.replay_not_found = None        
 
         self.set_stream_large_bodies(options.stream_large_bodies)
 
