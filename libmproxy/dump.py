@@ -86,6 +86,8 @@ class DumpMaster(flow.FlowMaster):
             self.not_found_filt = " ".join(options.replay_not_found) 
         else:
             self.not_found_filt = None        
+        self.enable_scenarios = options.enable_scenarios
+
         self.set_stream_large_bodies(options.stream_large_bodies)
 
         if options.filtstr:

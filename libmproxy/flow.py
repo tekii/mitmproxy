@@ -22,9 +22,18 @@ ODictCaseless = odict.ODictCaseless
 
 SCENARIO_KEY = "SCENARIO"
 MAIN_SCENARIO = "MAIN"
-
 Scenario = MAIN_SCENARIO
 
+# TODO:this should be rewritten using the new web ui
+@app.mapp.route("/scenario/")
+@app.mapp.route("/scenario/<name>")
+def scenario(name=None):
+    global Scenario
+    sc = MAIN_SCENARIO
+    if name:
+        sc = str(name)
+    Scenario = sc
+    return app.scenario(sc)
 
 class AppRegistry:
     def __init__(self):
@@ -241,20 +250,12 @@ class ServerPlaybackState:
         ]
 
         if not self.ignore_content:
-            ignore_payload_params = self.ignore_payload_params or []
-            ct = r.headers["Content-Type"]
-            if len(ct) > 0:
-                ct = ct[0] 
-            if len(ignore_payload_params) > 0 and ct == "application/x-www-form-urlencoded": 
-                parsedContent = urlparse.parse_qsl(r.content)
-                filtered = []
-                for p in parsedContent:
-                    if p[0] not in ignore_payload_params:
-                        filtered.append(p)
-
-                for p in filtered:
-                    key.append(p[0])
-                    key.append(p[1])
+            form_contents = r.get_form_urlencoded()
+            if self.ignore_payload_params and form_contents:
+                key.extend(
+                    p for p in form_contents
+                    if p[0] not in self.ignore_payload_params
+                )
             else:
                 key.append(str(r.content))
 
@@ -442,6 +443,7 @@ class FlowStore(FlowList):
     Responsible for handling flows in the state:
     Keeps a list of all flows and provides views on them.
     """
+
     def __init__(self):
         self._list = []
         self._set = set()  # Used for O(1) lookups
@@ -514,9 +516,9 @@ class FlowStore(FlowList):
         return c
 
     # TODO: Should accept_all operate on views or on all flows?
-    def accept_all(self):
+    def accept_all(self, master):
         for f in self._list:
-            f.accept_intercept()
+            f.accept_intercept(master)
 
     def kill_all(self, master):
         for f in self._list:
@@ -594,8 +596,8 @@ class State(object):
     def clear(self):
         self.flows._clear()
 
-    def accept_all(self):
-        self.flows.accept_all()
+    def accept_all(self, master):
+        self.flows.accept_all(master)
 
     def revert(self, f):
         f.revert()
@@ -633,17 +635,6 @@ class FlowMaster(controller.Master):
         self.stream = None
         self.apps = AppRegistry()
         self.enable_scenarios = None
-
-    @app.mapp.route("/scenario/")
-    @app.mapp.route("/scenario/<name>")
-    def scenario(name=None):
-        if name:
-            Scenario = str(name)
-        else: 
-            Scenario = MAIN_SCENARIO
-        return app.scenario(Scenario)
-        #return flask.render_template("onboarding/templates/scenario.html", scenario=Scenario)
-
     def start_app(self, host, port):
 
         # add scenario stuff here
@@ -740,14 +731,16 @@ class FlowMaster(controller.Master):
     def stop_client_playback(self):
         self.client_playback = None
 
-    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios):
+    def start_server_playback(self, flows, kill, headers, exit, nopop, ignore_params, ignore_content, 
+                              ignore_payload_params, enable_scenarios):
         """
             flows: List of flows.
             kill: Boolean, should we kill requests not part of the replay?
             ignore_params: list of parameters to ignore in server replay
             ignore_content: true if request content should be ignored in server replay
         """
-        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, ignore_payload_params, enable_scenarios)
+        self.server_playback = ServerPlaybackState(headers, flows, exit, nopop, ignore_params, ignore_content, 
+                                                   ignore_payload_params, enable_scenarios)
         self.kill_nonreplay = kill
         self.enable_scenarios = enable_scenarios
 
@@ -868,7 +861,7 @@ class FlowMaster(controller.Master):
         """
         if f.live:
             return "Can't replay request which is still live..."
-        if f.intercepting:
+        if f.intercepted:
             return "Can't replay while intercepting..."
         if f.request.content == http.CONTENT_MISSING:
             return "Can't replay request with missing content..."
@@ -925,7 +918,7 @@ class FlowMaster(controller.Master):
                     **{"mitmproxy.master": self}
                 )
                 if err:
-                    self.add_event("Error in wsgi app. %s"%err, "error")
+                    self.add_event("Error in wsgi app. %s" % err, "error")
                 f.reply(protocol.KILL)
                 return
         if f not in self.state.flows:  # don't add again on replay
@@ -961,6 +954,12 @@ class FlowMaster(controller.Master):
             self.stream.add(f)
         return f
 
+    def handle_intercept(self, f):
+        self.state.update_flow(f)
+
+    def handle_accept_intercept(self, f):
+        self.state.update_flow(f)
+
     def shutdown(self):
         self.unload_scripts()
         controller.Master.shutdown(self)
@@ -971,7 +970,7 @@ class FlowMaster(controller.Master):
             self.stop_stream()
 
     def start_stream(self, fp, filt):
-        self.stream = FilteredFlowWriter(fp, filt)
+        self.stream = FilteredFlowWriter(fp, filt, self.enable_scenarios)
 
     def stop_stream(self):
         self.stream.fo.close()
@@ -1007,7 +1006,7 @@ class FlowReader:
                 data = tnetstring.load(self.fo)
                 if tuple(data["version"][:2]) != version.IVERSION[:2]:
                     v = ".".join(str(i) for i in data["version"])
-                    raise FlowReadError("Incompatible serialized data version: %s"%v)
+                    raise FlowReadError("Incompatible serialized data version: %s" % v)
                 off = self.fo.tell()
                 yield handle.protocols[data["type"]]["flow"].from_state(data)
         except ValueError, v:
@@ -1016,15 +1015,16 @@ class FlowReader:
                 return
             raise FlowReadError("Invalid data format.")
 
-
 class FilteredFlowWriter:
-    def __init__(self, fo, filt):
+    def __init__(self, fo, filt, enable_scenarios):
         self.fo = fo
         self.filt = filt
+        self.enable_scenarios = enable_scenarios
 
     def add(self, f):
         if self.filt and not f.match(self.filt):
             return
-        f.request.headers[SCENARIO_KEY]=[Scenario]
+        if self.enable_scenarios:
+            f.request.headers[SCENARIO_KEY]=[Scenario]
         d = f.get_state()
         tnetstring.dump(d, self.fo)

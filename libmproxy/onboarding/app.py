@@ -27,11 +27,5 @@ def certs_p12():
     p = os.path.join(master().server.config.cadir, config.CONF_BASENAME + "-ca-cert.p12")
     return flask.Response(open(p, "rb").read(), mimetype='application/x-pkcs12')
 
-# @mapp.route("/scenario/")
-# @mapp.route("/scenario/<name>")
 def scenario(sc):
-    # if name:
-      #   flow.Scenario = str(name)
-    # else: 
-      #   flow.Scenario = flow.MAIN_SCENARIO
     return flask.render_template("scenario.html", scenario=sc)

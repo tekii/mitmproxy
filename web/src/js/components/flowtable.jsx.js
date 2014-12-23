@@ -6,8 +6,21 @@ var FlowRow = React.createClass({
         }.bind(this));
         var className = "";
         if (this.props.selected) {
-            className += "selected";
+            className += " selected";
         }
+        if (this.props.highlighted) {
+            className += " highlighted";
+        }
+        if (flow.intercepted) {
+            className += " intercepted";
+        }
+        if (flow.request) {
+            className += " has-request";
+        }
+        if (flow.response) {
+            className += " has-response";
+        }
+
         return (
             <tr className={className} onClick={this.props.selectFlow.bind(null, flow)}>
                 {columns}
@@ -78,11 +91,18 @@ var FlowTable = React.createClass({
     },
     renderRow: function (flow) {
         var selected = (flow === this.props.selected);
+        var highlighted =
+            (
+            this.props.view._highlight &&
+            this.props.view._highlight[flow.id]
+            );
+
         return <FlowRow key={flow.id}
             ref={flow.id}
             flow={flow}
             columns={this.state.columns}
             selected={selected}
+            highlighted={highlighted}
             selectFlow={this.props.selectFlow}
         />;
     },
