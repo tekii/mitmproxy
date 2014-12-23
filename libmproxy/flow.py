@@ -21,9 +21,18 @@ ODictCaseless = odict.ODictCaseless
 
 SCENARIO_KEY = "SCENARIO"
 MAIN_SCENARIO = "MAIN"
-
 Scenario = MAIN_SCENARIO
 
+# TODO:this should be rewritten using the new web ui
+@app.mapp.route("/scenario/")
+@app.mapp.route("/scenario/<name>")
+def scenario(name=None):
+    global Scenario
+    sc = MAIN_SCENARIO
+    if name:
+        sc = str(name)
+    Scenario = sc
+    return app.scenario(sc)
 
 class AppRegistry:
     def __init__(self):
@@ -628,21 +637,9 @@ class FlowMaster(controller.Master):
         self.replay_ignore_params = False
         self.replay_ignore_content = None
 
-
         self.stream = None
         self.apps = AppRegistry()
         self.enable_scenarios = None
-
-    @app.mapp.route("/scenario/")
-    @app.mapp.route("/scenario/<name>")
-    def scenario(name=None):
-        if name:
-            Scenario = str(name)
-        else: 
-            Scenario = MAIN_SCENARIO
-        return app.scenario(Scenario)
-        #return flask.render_template("onboarding/templates/scenario.html", scenario=Scenario)
-
     def start_app(self, host, port):
 
         # add scenario stuff here
@@ -952,7 +949,7 @@ class FlowMaster(controller.Master):
             self.stop_stream()
 
     def start_stream(self, fp, filt):
-        self.stream = FilteredFlowWriter(fp, filt)
+        self.stream = FilteredFlowWriter(fp, filt, self.enable_scenarios)
 
     def stop_stream(self):
         self.stream.fo.close()
@@ -997,15 +994,16 @@ class FlowReader:
                 return
             raise FlowReadError("Invalid data format.")
 
-
 class FilteredFlowWriter:
-    def __init__(self, fo, filt):
+    def __init__(self, fo, filt, enable_scenarios):
         self.fo = fo
         self.filt = filt
+        self.enable_scenarios = enable_scenarios
 
     def add(self, f):
         if self.filt and not f.match(self.filt):
             return
-        f.request.headers[SCENARIO_KEY]=[Scenario]
+        if self.enable_scenarios:
+            f.request.headers[SCENARIO_KEY]=[Scenario]
         d = f.get_state()
         tnetstring.dump(d, self.fo)

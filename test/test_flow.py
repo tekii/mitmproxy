@@ -613,7 +613,7 @@ class TestSerialize:
     def test_filter(self):
         sio = StringIO()
         fl = filt.parse("~c 200")
-        w = flow.FilteredFlowWriter(sio, fl)
+        w = flow.FilteredFlowWriter(sio, fl, False)
 
         f = tutils.tflow(resp=True)
         f.response.code = 200
