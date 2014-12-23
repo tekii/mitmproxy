@@ -90,11 +90,11 @@ var Key = {
     TAB: 9,
     SPACE: 32,
     BACKSPACE: 8,
-    J: 74,
-    K: 75,
-    H: 72,
-    L: 76
 };
+// Add A-Z
+for(var i=65; i <= 90; i++){
+    Key[String.fromCharCode(i)] = i;
+}
 
 
 var formatSize = function (bytes) {
@@ -233,7 +233,11 @@ var ConnectionActions = {
 var SettingsActions = {
     update: function (settings) {
 
-        //TODO: Update server.
+        jQuery.ajax({
+            type: "PUT",
+            url: "/settings",
+            data: settings
+        });
 
         //Facebook Flux: We do an optimistic update on the client already.
         AppDispatcher.dispatchViewAction({
@@ -2060,11 +2064,11 @@ var _MessageUtils = {
         }
         return message._headerLookups[regex];
     },
-    match_header: function(message, regex){
+    match_header: function (message, regex) {
         var headers = message.headers;
         var i = headers.length;
-        while(i--){
-            if(regex.test(headers[i].join(" "))){
+        while (i--) {
+            if (regex.test(headers[i].join(" "))) {
                 return headers[i];
             }
         }
@@ -2293,7 +2297,7 @@ _.extend(StoreView.prototype, EventEmitter.prototype, {
     },
     recalculate: function (filt, sortfun) {
         if (filt) {
-            this.filt = filt;
+            this.filt = filt.bind(this);
         }
         if (sortfun) {
             this.sortfun = sortfun.bind(this);
@@ -2355,7 +2359,6 @@ _.extend(StoreView.prototype, EventEmitter.prototype, {
         }
     }
 });
-
 function Connection(url) {
 
     if (url[0] === "/") {
@@ -2495,7 +2498,7 @@ var xsrf = $.param({_xsrf: getCookie("_xsrf")});
 
 //Tornado XSRF Protection.
 $.ajaxPrefilter(function (options) {
-    if (options.type === "post" && options.url[0] === "/") {
+    if (["post","put","delete"].indexOf(options.type.toLowerCase()) >= 0 && options.url[0] === "/") {
         if (options.data) {
             options.data += ("&" + xsrf);
         } else {
@@ -2586,10 +2589,9 @@ var VirtualScrollMixin = {
 };
 var FilterInput = React.createClass({displayName: 'FilterInput',
     getInitialState: function () {
-        // Focus: Show popover
-        // Mousefocus: Mouse over Tooltip
-        // onBlur is triggered before click on tooltip,
-        // hiding the tooltip before link is clicked.
+        // Consider both focus and mouseover for showing/hiding the tooltip,
+        // because onBlur of the input is triggered before the click on the tooltip
+        // finalized, hiding the tooltip just as the user clicks on it.
         return {
             value: this.props.value,
             focus: false,
@@ -2604,16 +2606,14 @@ var FilterInput = React.createClass({displayName: 'FilterInput',
         this.setState({
             value: nextValue
         });
-        try {
-            Filt.parse(nextValue);
-        } catch (err) {
-            return;
+        // Only propagate valid filters upwards.
+        if (this.isValid(nextValue)) {
+            this.props.onChange(nextValue);
         }
-        this.props.onChange(nextValue);
     },
-    isValid: function () {
+    isValid: function (filt) {
         try {
-            Filt.parse(this.state.value);
+            Filt.parse(filt || this.state.value);
             return true;
         } catch (e) {
             return false;
@@ -2650,16 +2650,14 @@ var FilterInput = React.createClass({displayName: 'FilterInput',
         this.setState({mousefocus: false});
     },
     onKeyDown: function (e) {
-        if (e.target.value === "" &&
-            e.keyCode === Key.BACKSPACE) {
-            e.preventDefault();
-            this.remove();
+        if (e.keyCode === Key.ESC || e.keyCode === Key.ENTER) {
+            this.blur();
+            // If closed using ESC/ENTER, hide the tooltip.
+            this.setState({mousefocus: false});
         }
     },
-    remove: function () {
-        if(this.props.onRemove) {
-            this.props.onRemove();
-        }
+    blur: function () {
+        this.refs.input.getDOMNode().blur();
     },
     focus: function () {
         this.refs.input.getDOMNode().select();
@@ -2686,7 +2684,7 @@ var FilterInput = React.createClass({displayName: 'FilterInput',
                 React.createElement("span", {className: "input-group-addon"}, 
                     React.createElement("i", {className: icon, style: {color: this.props.color}})
                 ), 
-                React.createElement("input", {type: "text", placeholder: "filter expression", className: "form-control", 
+                React.createElement("input", {type: "text", placeholder: this.props.placeholder, className: "form-control", 
                     ref: "input", 
                     onChange: this.onChange, 
                     onFocus: this.onFocus, 
@@ -2701,12 +2699,6 @@ var FilterInput = React.createClass({displayName: 'FilterInput',
 
 var MainMenu = React.createClass({displayName: 'MainMenu',
     mixins: [Navigation, State],
-    getInitialState: function () {
-        return {
-            filter: this.getQuery()[Query.FILTER] || "",
-            highlight: (this.getQuery()[Query.HIGHLIGHT] || "").split("&").map(decodeURIComponent)
-        };
-    },
     statics: {
         title: "Traffic",
         route: "flows"
@@ -2717,63 +2709,25 @@ var MainMenu = React.createClass({displayName: 'MainMenu',
         });
     },
     clearFlows: function () {
-        $.post("/clear");
-    },
-    applyFilter: function (filter, highlight) {
-        var d = {};
-        d[Query.FILTER] = filter;
-        d[Query.HIGHLIGHT] = highlight.map(encodeURIComponent).join("&");
-        this.setQuery(d);
+        jQuery.post("/clear");
     },
     onFilterChange: function (val) {
-        this.setState({filter: val});
-        this.applyFilter(val, this.state.highlight);
+        var d = {};
+        d[Query.FILTER] = val;
+        this.setQuery(d);
     },
-    onHighlightChange: function (index, val) {
-        var highlight = this.state.highlight.slice();
-        highlight[index] = val;
-        if (highlight[highlight.length - 1] !== "" && highlight.length < 14) {
-            highlight.push("");
-        }
-        this.setState({
-            highlight: highlight
-        });
-        this.applyFilter(this.state.filter, highlight);
+    onHighlightChange: function (val) {
+        var d = {};
+        d[Query.HIGHLIGHT] = val;
+        this.setQuery(d);
     },
-    onHighlightRemove: function (index) {
-        if (this.state.highlight.length > 1 && index < this.state.highlight.length - 1) {
-            var highlight = this.state.highlight.slice();
-            highlight.splice(index, 1);
-            this.setState({
-                highlight: highlight
-            });
-        }
-        this.refs["highlight-" + Math.max(0, index - 1)].focus();
-    },
-    getColor: function (index) {
-        var colors = [
-            "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#1f77b4", "#bcbd22", "#17becf",
-            "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", "#aec7e8", "#dbdb8d", "#9edae5"
-        ];
-        return colors[index % colors.length];
+    onInterceptChange: function (val) {
+        SettingsActions.update({intercept: val});
     },
     render: function () {
-        var highlightFilterInputs = [];
-        for (var i = 0; i < this.state.highlight.length; i++) {
-            highlightFilterInputs.push(React.createElement("span", {key: "placeholder-" + i}, " "));
-            highlightFilterInputs.push(
-                React.createElement(FilterInput, {
-                    key: "highlight-" + i, 
-                    ref: "highlight-" + i, 
-                    type: "tag", 
-                    color: this.getColor(i), 
-                    value: this.state.highlight[i], 
-                    onChange: this.onHighlightChange.bind(this, i), 
-                    onRemove: this.onHighlightRemove.bind(this, i)}
-                )
-            );
-
-        }
+        var filter = this.getQuery()[Query.FILTER] || "";
+        var highlight = this.getQuery()[Query.HIGHLIGHT] || "";
+        var intercept = this.props.settings.intercept || "";
 
         return (
             React.createElement("div", null, 
@@ -2781,17 +2735,34 @@ var MainMenu = React.createClass({displayName: 'MainMenu',
                     React.createElement("i", {className: "fa fa-database"}), 
                 " Display Event Log"
                 ), 
-            " ", 
+                React.createElement("span", null, " "), 
                 React.createElement("button", {className: "btn btn-default", onClick: this.clearFlows}, 
                     React.createElement("i", {className: "fa fa-eraser"}), 
                 " Clear Flows"
                 ), 
-            " ", 
-                React.createElement("form", {className: "form-inline", style: {display:"inline"}}, 
-                    React.createElement(FilterInput, {type: "filter", color: "black", value: this.state.filter, onChange: this.onFilterChange}), 
-                    highlightFilterInputs 
+                React.createElement("span", null, " "), 
+                React.createElement("form", {className: "form-inline", style: {display: "inline"}}, 
+                    React.createElement(FilterInput, {
+                        placeholder: "Filter", 
+                        type: "filter", 
+                        color: "black", 
+                        value: filter, 
+                        onChange: this.onFilterChange}), 
+                    React.createElement("span", null, " "), 
+                    React.createElement(FilterInput, {
+                        placeholder: "Highlight", 
+                        type: "tag", 
+                        color: "hsl(48, 100%, 50%)", 
+                        value: highlight, 
+                        onChange: this.onHighlightChange}), 
+                    React.createElement("span", null, " "), 
+                    React.createElement(FilterInput, {
+                        placeholder: "Intercept", 
+                        type: "pause", 
+                        color: "hsl(208, 56%, 53%)", 
+                        value: intercept, 
+                        onChange: this.onInterceptChange})
                 )
-
             )
         );
     }
@@ -3103,8 +3074,21 @@ var FlowRow = React.createClass({displayName: 'FlowRow',
         }.bind(this));
         var className = "";
         if (this.props.selected) {
-            className += "selected";
+            className += " selected";
         }
+        if (this.props.highlighted) {
+            className += " highlighted";
+        }
+        if (flow.intercepted) {
+            className += " intercepted";
+        }
+        if (flow.request) {
+            className += " has-request";
+        }
+        if (flow.response) {
+            className += " has-response";
+        }
+
         return (
             React.createElement("tr", {className: className, onClick: this.props.selectFlow.bind(null, flow)}, 
                 columns
@@ -3175,11 +3159,18 @@ var FlowTable = React.createClass({displayName: 'FlowTable',
     },
     renderRow: function (flow) {
         var selected = (flow === this.props.selected);
+        var highlighted =
+            (
+            this.props.view._highlight &&
+            this.props.view._highlight[flow.id]
+            );
+
         return React.createElement(FlowRow, {key: flow.id, 
             ref: flow.id, 
             flow: flow, 
             columns: this.state.columns, 
             selected: selected, 
+            highlighted: highlighted, 
             selectFlow: this.props.selectFlow}
         );
     },
@@ -3559,17 +3550,34 @@ var FlowDetail = React.createClass({displayName: 'FlowDetail',
 var MainView = React.createClass({displayName: 'MainView',
     mixins: [Navigation, State],
     getInitialState: function () {
-        this.onQueryChange(Query.FILTER, function(){
+        this.onQueryChange(Query.FILTER, function () {
+            this.state.view.recalculate(this.getViewFilt(), this.getViewSort());
+        }.bind(this));
+        this.onQueryChange(Query.HIGHLIGHT, function () {
             this.state.view.recalculate(this.getViewFilt(), this.getViewSort());
         }.bind(this));
         return {
             flows: []
         };
     },
-    getViewFilt: function(){
-        return Filt.parse(this.getQuery()[Query.FILTER] || "");
+    getViewFilt: function () {
+        try {
+            var filt = Filt.parse(this.getQuery()[Query.FILTER] || "");
+            var highlightStr = this.getQuery()[Query.HIGHLIGHT];
+            var highlight = highlightStr ? Filt.parse(highlightStr) : false;
+        } catch (e) {
+            console.error("Error when processing filter: " + e);
+        }
+
+        return function filter_and_highlight(flow) {
+            if (!this._highlight) {
+                this._highlight = {};
+            }
+            this._highlight[flow.id] = highlight && highlight(flow);
+            return filt(flow);
+        };
     },
-    getViewSort: function(){
+    getViewSort: function () {
     },
     componentWillReceiveProps: function (nextProps) {
         if (nextProps.flowStore !== this.props.flowStore) {
@@ -3586,10 +3594,10 @@ var MainView = React.createClass({displayName: 'MainView',
         view.addListener("recalculate", this.onRecalculate);
         view.addListener("add update remove", this.onUpdate);
     },
-    onRecalculate: function(){
+    onRecalculate: function () {
         this.forceUpdate();
         var selected = this.getSelected();
-        if(selected){
+        if (selected) {
             this.refs.flowTable.scrollIntoView(selected);
         }
     },
@@ -3684,13 +3692,20 @@ var MainView = React.createClass({displayName: 'MainView',
                     this.refs.flowDetails.nextTab(+1);
                 }
                 break;
+            case Key.A:
+                if (e.shiftKey) {
+                    $.post("/flows/accept");
+                } else if(this.getSelected()) {
+                    $.post("/flows/" + this.getSelected().id + "/accept");
+                }
+                break;
             default:
                 console.debug("keydown", e.keyCode);
                 return;
         }
         e.preventDefault();
     },
-    getSelected: function(){
+    getSelected: function () {
         return this.props.flowStore.get(this.getParams().flowId);
     },
     render: function () {
@@ -3868,9 +3883,12 @@ var EventLog = React.createClass({displayName: 'EventLog',
 var Footer = React.createClass({displayName: 'Footer',
     render: function () {
         var mode = this.props.settings.mode;
+        var intercept = this.props.settings.intercept;
         return (
             React.createElement("footer", null, 
-                mode != "regular" ? React.createElement("span", {className: "label label-success"}, mode, " mode") : null
+                mode != "regular" ? React.createElement("span", {className: "label label-success"}, mode, " mode") : null, 
+                " ", 
+                intercept ? React.createElement("span", {className: "label label-success"}, "Intercept: ", intercept) : null
             )
         );
     }

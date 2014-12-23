@@ -157,16 +157,31 @@ header .menu {
 .flow-table tr {
   cursor: pointer;
 }
+.flow-table tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.05);
+}
 .flow-table tr.selected {
   background-color: rgba(193, 215, 235, 0.5) !important;
+}
+.flow-table tr.highlighted {
+  background-color: rgba(255, 204, 0, 0.4) !important;
+}
+.flow-table tr.highlighted:nth-child(even) {
+  background-color: rgba(255, 204, 0, 0.5) !important;
 }
 .flow-table td {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.flow-table tr:nth-child(even) {
-  background-color: rgba(0, 0, 0, 0.05);
+.flow-table tr.intercepted:not(.has-response) .col-path,
+.flow-table tr.intercepted:not(.has-response) .col-method {
+  color: #ff8000;
+}
+.flow-table tr.intercepted.has-response .col-status,
+.flow-table tr.intercepted.has-response .col-size,
+.flow-table tr.intercepted.has-response .col-time {
+  color: #ff8000;
 }
 .flow-table .col-tls {
   width: 10px;

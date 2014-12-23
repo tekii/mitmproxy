@@ -1,17 +1,34 @@
 var MainView = React.createClass({
     mixins: [Navigation, State],
     getInitialState: function () {
-        this.onQueryChange(Query.FILTER, function(){
+        this.onQueryChange(Query.FILTER, function () {
+            this.state.view.recalculate(this.getViewFilt(), this.getViewSort());
+        }.bind(this));
+        this.onQueryChange(Query.HIGHLIGHT, function () {
             this.state.view.recalculate(this.getViewFilt(), this.getViewSort());
         }.bind(this));
         return {
             flows: []
         };
     },
-    getViewFilt: function(){
-        return Filt.parse(this.getQuery()[Query.FILTER] || "");
+    getViewFilt: function () {
+        try {
+            var filt = Filt.parse(this.getQuery()[Query.FILTER] || "");
+            var highlightStr = this.getQuery()[Query.HIGHLIGHT];
+            var highlight = highlightStr ? Filt.parse(highlightStr) : false;
+        } catch (e) {
+            console.error("Error when processing filter: " + e);
+        }
+
+        return function filter_and_highlight(flow) {
+            if (!this._highlight) {
+                this._highlight = {};
+            }
+            this._highlight[flow.id] = highlight && highlight(flow);
+            return filt(flow);
+        };
     },
-    getViewSort: function(){
+    getViewSort: function () {
     },
     componentWillReceiveProps: function (nextProps) {
         if (nextProps.flowStore !== this.props.flowStore) {
@@ -28,10 +45,10 @@ var MainView = React.createClass({
         view.addListener("recalculate", this.onRecalculate);
         view.addListener("add update remove", this.onUpdate);
     },
-    onRecalculate: function(){
+    onRecalculate: function () {
         this.forceUpdate();
         var selected = this.getSelected();
-        if(selected){
+        if (selected) {
             this.refs.flowTable.scrollIntoView(selected);
         }
     },
@@ -126,13 +143,20 @@ var MainView = React.createClass({
                     this.refs.flowDetails.nextTab(+1);
                 }
                 break;
+            case Key.A:
+                if (e.shiftKey) {
+                    $.post("/flows/accept");
+                } else if(this.getSelected()) {
+                    $.post("/flows/" + this.getSelected().id + "/accept");
+                }
+                break;
             default:
                 console.debug("keydown", e.keyCode);
                 return;
         }
         e.preventDefault();
     },
-    getSelected: function(){
+    getSelected: function () {
         return this.props.flowStore.get(this.getParams().flowId);
     },
     render: function () {

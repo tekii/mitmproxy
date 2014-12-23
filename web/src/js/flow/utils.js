@@ -23,11 +23,11 @@ var _MessageUtils = {
         }
         return message._headerLookups[regex];
     },
-    match_header: function(message, regex){
+    match_header: function (message, regex) {
         var headers = message.headers;
         var i = headers.length;
-        while(i--){
-            if(regex.test(headers[i].join(" "))){
+        while (i--) {
+            if (regex.test(headers[i].join(" "))) {
                 return headers[i];
             }
         }
