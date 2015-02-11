@@ -8,12 +8,13 @@ import Cookie
 import cookielib
 import os
 import re
-from netlib import odict, wsgi
+from netlib import odict, wsgi, tcp
 import netlib.http
 from . import controller, protocol, tnetstring, filt, script, version
 from .onboarding import app
 from .protocol import http, handle
 from .proxy.config import HostMatcher
+from .proxy.connection import ClientConnection, ServerConnection
 import urlparse
 
 ODict = odict.ODict
@@ -770,7 +771,20 @@ class FlowMaster(controller.Master):
         to be replayed 
 
         """        
-        f = http.HTTPFlow(None,None);
+        c = ClientConnection.from_state(dict(
+                address=dict(address=(host, port), use_ipv6=False),
+                clientcert=None
+            ))
+        with open("flow.txt", "a") as logfile:
+            logfile.write("%s:%d\n" % (host,port))
+
+        s = ServerConnection.from_state(dict(
+                address=dict(address=(host, port), use_ipv6=False),
+                state=[],
+                source_address=None, #source_address=dict(address=(host, port), use_ipv6=False),
+                cert=None
+            ))
+        f = http.HTTPFlow(c,s);
         headers = ODictCaseless()
         
         req = http.HTTPRequest("absolute", method, scheme, host, port, path, (1, 1), headers, None,
