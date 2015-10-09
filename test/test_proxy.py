@@ -1,46 +1,47 @@
-import argparse
+import mock
+from OpenSSL import SSL
+
 from libmproxy import cmdline
-from libmproxy.proxy import ProxyConfig, process_proxy_options
-from libmproxy.proxy.connection import ServerConnection
-from libmproxy.proxy.primitives import ProxyError
+from libmproxy.proxy import ProxyConfig
+from libmproxy.proxy.config import process_proxy_options
+from libmproxy.models.connections import ServerConnection
 from libmproxy.proxy.server import DummyServer, ProxyServer, ConnectionHandler
+from netlib.exceptions import TcpDisconnect
 import tutils
 from libpathod import test
 from netlib import http, tcp
-import mock
+from netlib.http import http1
 
 
-def test_proxy_error():
-    p = ProxyError(111, "msg")
-    assert str(p)
-
-
-class TestServerConnection:
-    def setUp(self):
-        self.d = test.Daemon()
-
-    def tearDown(self):
-        self.d.shutdown()
+class TestServerConnection(object):
 
     def test_simple(self):
+        self.d = test.Daemon()
         sc = ServerConnection((self.d.IFACE, self.d.port))
         sc.connect()
         f = tutils.tflow()
         f.server_conn = sc
         f.request.path = "/p/200:da"
-        sc.send(f.request.assemble())
-        assert http.read_response(sc.rfile, f.request.method, 1000)
+
+        # use this protocol just to assemble - not for actual sending
+        sc.wfile.write(http1.assemble_request(f.request))
+        sc.wfile.flush()
+
+        assert http1.read_response(sc.rfile, f.request, 1000)
         assert self.d.last_log()
 
         sc.finish()
+        self.d.shutdown()
 
     def test_terminate_error(self):
+        self.d = test.Daemon()
         sc = ServerConnection((self.d.IFACE, self.d.port))
         sc.connect()
         sc.connection = mock.Mock()
         sc.connection.recv = mock.Mock(return_value=False)
-        sc.connection.flush = mock.Mock(side_effect=tcp.NetLibDisconnect)
+        sc.connection.flush = mock.Mock(side_effect=TcpDisconnect)
         sc.finish()
+        self.d.shutdown()
 
     def test_repr(self):
         sc = tutils.tserver_conn()
@@ -90,7 +91,10 @@ class TestProcessProxyOptions:
         self.assert_err("expected one argument", "-U")
         self.assert_err("Invalid server specification", "-U", "upstream")
 
-        self.assert_err("mutually exclusive", "-R", "http://localhost", "-T")
+        self.assert_err("not allowed with", "-R", "http://localhost", "-T")
+
+    def test_socks_auth(self):
+        self.assert_err("Proxy Authentication not supported in SOCKS mode.", "--socks", "--nonanonymous")
 
     def test_client_certs(self):
         with tutils.tmpdir() as cadir:
@@ -127,6 +131,20 @@ class TestProcessProxyOptions:
             "--singleuser",
             "test")
 
+    def test_verify_upstream_cert(self):
+        p = self.assert_noerr("--verify-upstream-cert")
+        assert p.openssl_verification_mode_server == SSL.VERIFY_PEER
+
+    def test_upstream_trusted_cadir(self):
+        expected_dir = "/path/to/a/ca/dir"
+        p = self.assert_noerr("--upstream-trusted-cadir", expected_dir)
+        assert p.openssl_trusted_cadir_server == expected_dir
+
+    def test_upstream_trusted_ca(self):
+        expected_file = "/path/to/a/cert/file"
+        p = self.assert_noerr("--upstream-trusted-ca", expected_file)
+        assert p.openssl_trusted_ca_server == expected_file
+
 
 class TestProxyServer:
     # binding to 0.0.0.0:1 works without special permissions on Windows
@@ -154,13 +172,19 @@ class TestDummyServer:
 class TestConnectionHandler:
     def test_fatal_error(self):
         config = mock.Mock()
-        config.mode.get_upstream_server.side_effect = RuntimeError
+        root_layer = mock.Mock()
+        root_layer.side_effect = RuntimeError
+        config.mode.return_value = root_layer
+        channel = mock.Mock()
+
+        def ask(_, x):
+            return x
+        channel.ask = ask
         c = ConnectionHandler(
-            config,
             mock.MagicMock(),
-            ("127.0.0.1",
-             8080),
-            None,
-            mock.MagicMock())
+            ("127.0.0.1", 8080),
+            config,
+            channel
+        )
         with tutils.capture_stderr(c.handle) as output:
             assert "mitmproxy has crashed" in output

@@ -1,29 +1,24 @@
 # This scripts demonstrates how mitmproxy can switch to a second/different upstream proxy
 # in upstream proxy mode.
 #
-# Usage: mitmdump -U http://default-upstream-proxy.local:8080/ -s
-# "change_upstream_proxy.py host"
-from libmproxy.protocol.http import send_connect_request
-
-alternative_upstream_proxy = ("localhost", 8082)
+# Usage: mitmdump -U http://default-upstream-proxy.local:8080/ -s change_upstream_proxy.py
+#
+# If you want to change the target server, you should modify flow.request.host and flow.request.port
 
 
-def should_redirect(flow):
-    return flow.request.host == "example.com"
+def proxy_address(flow):
+    # Poor man's loadbalancing: route every second domain through the alternative proxy.
+    if hash(flow.request.host) % 2 == 1:
+        return ("localhost", 8082)
+    else:
+        return ("localhost", 8081)
 
 
 def request(context, flow):
-    if flow.live and should_redirect(flow):
-
-        # If you want to change the target server, you should modify flow.request.host and flow.request.port
-        # flow.live.change_server should only be used by inline scripts to change the upstream proxy,
-        # unless you are sure that you know what you are doing.
-        server_changed = flow.live.change_server(
-            alternative_upstream_proxy,
-            persistent_change=True)
-        if flow.request.scheme == "https" and server_changed:
-            send_connect_request(
-                flow.live.c.server_conn,
-                flow.request.host,
-                flow.request.port)
-            flow.live.c.establish_ssl(server=True)
+    if flow.request.method == "CONNECT":
+        # If the decision is done by domain, one could also modify the server address here.
+        # We do it after CONNECT here to have the request data available as well.
+        return
+    address = proxy_address(flow)
+    if flow.live:
+        flow.live.change_upstream_proxy_server(address)

@@ -28,7 +28,7 @@ class HelpView(urwid.ListBox):
         keys = [
             ("j, k", "down, up"),
             ("h, l", "left, right (in some contexts)"),
-            ("g, G", "go to end, beginning"),
+            ("g, G", "go to beginning, end"),
             ("space", "page down"),
             ("pg up/down", "page up/down"),
             ("arrows", "up, down, left, right"),
@@ -42,12 +42,12 @@ class HelpView(urwid.ListBox):
 
         text.append(urwid.Text([("head", "\n\nGlobal keys:\n")]))
         keys = [
-            ("c", "client replay"),
+            ("c", "client replay of HTTP requests"),
             ("i", "set interception pattern"),
             ("o", "options"),
             ("q", "quit / return to previous page"),
             ("Q", "quit without confirm prompt"),
-            ("S", "server replay"),
+            ("S", "server replay of HTTP responses"),
         ]
         text.extend(
             common.format_keyvals(keys, key="key", val="text", indent=4)
@@ -108,8 +108,8 @@ class HelpView(urwid.ListBox):
             return None
         elif key == "?":
             key = None
-        elif key == "G":
-            self.set_focus(0)
         elif key == "g":
+            self.set_focus(0)
+        elif key == "G":
             self.set_focus(len(self.body.contents))
         return urwid.ListBox.keypress(self, size, key)

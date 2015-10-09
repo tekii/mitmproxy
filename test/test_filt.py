@@ -1,8 +1,8 @@
 import cStringIO
-from netlib import odict
 from libmproxy import filt, flow
 from libmproxy.protocol import http
-from libmproxy.protocol.primitives import Error
+from libmproxy.models import Error
+from netlib.http import Headers
 import tutils
 
 
@@ -76,8 +76,7 @@ class TestParsing:
 
 class TestMatching:
     def req(self):
-        headers = odict.ODictCaseless()
-        headers["header"] = ["qvalue"]
+        headers = Headers(header="qvalue")
         req = http.HTTPRequest(
             "absolute",
             "GET",
@@ -85,7 +84,7 @@ class TestMatching:
             "host",
             80,
             "/path",
-            (1, 1),
+            b"HTTP/1.1",
             headers,
             "content_request",
             None,
@@ -98,11 +97,9 @@ class TestMatching:
     def resp(self):
         f = self.req()
 
-        headers = odict.ODictCaseless()
-        headers["header_response"] = ["svalue"]
+        headers = Headers([["header_response", "svalue"]])
         f.response = http.HTTPResponse(
-            (1,
-             1),
+            b"HTTP/1.1",
             200,
             "OK",
             headers,
@@ -123,7 +120,7 @@ class TestMatching:
     def test_asset(self):
         s = self.resp()
         assert not self.q("~a", s)
-        s.response.headers["content-type"] = ["text/javascript"]
+        s.response.headers["content-type"] = "text/javascript"
         assert self.q("~a", s)
 
     def test_fcontenttype(self):
@@ -132,16 +129,16 @@ class TestMatching:
         assert not self.q("~t content", q)
         assert not self.q("~t content", s)
 
-        q.request.headers["content-type"] = ["text/json"]
+        q.request.headers["content-type"] = "text/json"
         assert self.q("~t json", q)
         assert self.q("~tq json", q)
         assert not self.q("~ts json", q)
 
-        s.response.headers["content-type"] = ["text/json"]
+        s.response.headers["content-type"] = "text/json"
         assert self.q("~t json", s)
 
         del s.response.headers["content-type"]
-        s.request.headers["content-type"] = ["text/json"]
+        s.request.headers["content-type"] = "text/json"
         assert self.q("~t json", s)
         assert self.q("~tq json", s)
         assert not self.q("~ts json", s)
@@ -240,6 +237,23 @@ class TestMatching:
         assert not self.q("~c 200", q)
         assert self.q("~c 200", s)
         assert not self.q("~c 201", s)
+
+    def test_src(self):
+        q = self.req()
+        assert self.q("~src address", q)
+        assert not self.q("~src foobar", q)
+        assert self.q("~src :22", q)
+        assert not self.q("~src :99", q)
+        assert self.q("~src address:22", q)
+
+    def test_dst(self):
+        q = self.req()
+        q.server_conn = tutils.tserver_conn()
+        assert self.q("~dst address", q)
+        assert not self.q("~dst foobar", q)
+        assert self.q("~dst :22", q)
+        assert not self.q("~dst :99", q)
+        assert self.q("~dst address:22", q)
 
     def test_and(self):
         s = self.resp()

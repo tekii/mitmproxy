@@ -4,10 +4,13 @@ import urwid
 import urwid.util
 import os
 
-from .. import utils
-from ..protocol.http import CONTENT_MISSING, decoded
-from . import signals
+from netlib.http import CONTENT_MISSING
 import netlib.utils
+
+from .. import utils
+from ..models import decoded
+from . import signals
+
 
 try:
     import pyperclip
@@ -115,9 +118,11 @@ def fcol(s, attr):
 if urwid.util.detected_encoding:
     SYMBOL_REPLAY = u"\u21ba"
     SYMBOL_RETURN = u"\u2190"
+    SYMBOL_MARK = u"\u25cf"
 else:
     SYMBOL_REPLAY = u"[r]"
     SYMBOL_RETURN = u"<-"
+    SYMBOL_MARK = "[m]"
 
 
 def raw_format_flow(f, focus, extended, padding):
@@ -133,6 +138,10 @@ def raw_format_flow(f, focus, extended, padding):
         )
     else:
         req.append(fcol(">>" if focus else "  ", "focus"))
+
+    if f["marked"]:
+        req.append(fcol(SYMBOL_MARK, "mark"))
+
     if f["req_is_replay"]:
         req.append(fcol(SYMBOL_REPLAY, "replay"))
     req.append(fcol(f["req_method"], "method"))
@@ -243,7 +252,7 @@ def copy_flow_format_data(part, scope, flow):
                 return None, "Request content is missing"
             with decoded(flow.request):
                 if part == "h":
-                    data += flow.request.assemble()
+                    data += flow.client_conn.protocol.assemble(flow.request)
                 elif part == "c":
                     data += flow.request.content
                 else:
@@ -256,7 +265,7 @@ def copy_flow_format_data(part, scope, flow):
                 return None, "Response content is missing"
             with decoded(flow.response):
                 if part == "h":
-                    data += flow.response.assemble()
+                    data += flow.client_conn.protocol.assemble(flow.response)
                 elif part == "c":
                     data += flow.response.content
                 else:
@@ -289,7 +298,7 @@ def copy_flow(part, scope, flow, master, state):
     toclip = ""
     try:
         toclip = data.decode('utf-8')
-    except (UnicodeDecodeError):        
+    except (UnicodeDecodeError):
         toclip = data
 
     try:
@@ -372,7 +381,8 @@ def ask_save_body(part, master, state, flow):
 flowcache = utils.LRUCache(800)
 
 
-def format_flow(f, focus, extended=False, hostheader=False, padding=2):
+def format_flow(f, focus, extended=False, hostheader=False, padding=2,
+        marked=False):
     d = dict(
         intercepted = f.intercepted,
         acked = f.reply.acked,
@@ -380,10 +390,12 @@ def format_flow(f, focus, extended=False, hostheader=False, padding=2):
         req_timestamp = f.request.timestamp_start,
         req_is_replay = f.request.is_replay,
         req_method = f.request.method,
-        req_url = f.request.pretty_url(hostheader=hostheader),
+        req_url = f.request.pretty_url if hostheader else f.request.url,
 
         err_msg = f.error.msg if f.error else None,
-        resp_code = f.response.code if f.response else None,
+        resp_code = f.response.status_code if f.response else None,
+
+        marked = marked,
     )
     if f.response:
         if f.response.content:
@@ -398,14 +410,14 @@ def format_flow(f, focus, extended=False, hostheader=False, padding=2):
         roundtrip = utils.pretty_duration(duration)
 
         d.update(dict(
-            resp_code = f.response.code,
+            resp_code = f.response.status_code,
             resp_is_replay = f.response.is_replay,
             resp_clen = contentdesc,
             roundtrip = roundtrip,
         ))
-        t = f.response.headers["content-type"]
+        t = f.response.headers.get("content-type")
         if t:
-            d["resp_ctype"] = t[0].split(";")[0]
+            d["resp_ctype"] = t.split(";")[0]
         else:
             d["resp_ctype"] = ""
     return flowcache.get(

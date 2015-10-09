@@ -2,11 +2,11 @@ from __future__ import print_function, absolute_import
 import os
 import signal
 import sys
-import netlib.version
-import netlib.version_check
+from netlib.version_check import check_pyopenssl_version, check_mitmproxy_version
 from . import version, cmdline
-from .proxy import process_proxy_options, ProxyServerError
+from .exceptions import ServerException
 from .proxy.server import DummyServer, ProxyServer
+from .proxy.config import process_proxy_options
 
 
 def assert_utf8_env():
@@ -31,7 +31,7 @@ def get_server(dummy_server, options):
     else:
         try:
             return ProxyServer(options)
-        except ProxyServerError as v:
+        except ServerException as v:
             print(str(v), file=sys.stderr)
             sys.exit(1)
 
@@ -39,7 +39,8 @@ def get_server(dummy_server, options):
 def mitmproxy(args=None):  # pragma: nocover
     from . import console
 
-    netlib.version_check.version_check(version.IVERSION)
+    check_pyopenssl_version()
+    check_mitmproxy_version(version.IVERSION)
     assert_utf8_env()
 
     parser = cmdline.mitmproxy()
@@ -54,6 +55,7 @@ def mitmproxy(args=None):  # pragma: nocover
     console_options.eventlog = options.eventlog
     console_options.intercept = options.intercept
     console_options.limit = options.limit
+    console_options.no_mouse = options.no_mouse
 
     server = get_server(console_options.no_server, proxy_config)
 
@@ -67,7 +69,8 @@ def mitmproxy(args=None):  # pragma: nocover
 def mitmdump(args=None):  # pragma: nocover
     from . import dump
 
-    netlib.version_check.version_check(version.IVERSION)
+    check_pyopenssl_version()
+    check_mitmproxy_version(version.IVERSION)
 
     parser = cmdline.mitmdump()
     options = parser.parse_args(args)
@@ -101,7 +104,9 @@ def mitmdump(args=None):  # pragma: nocover
 def mitmweb(args=None):  # pragma: nocover
     from . import web
 
-    netlib.version_check.version_check(version.IVERSION)
+    check_pyopenssl_version()
+    check_mitmproxy_version(version.IVERSION)
+
     parser = cmdline.mitmweb()
 
     options = parser.parse_args(args)

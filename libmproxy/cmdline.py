@@ -1,8 +1,11 @@
 from __future__ import absolute_import
 import os
 import re
+
 import configargparse
-from netlib import http
+
+from netlib.tcp import Address, sslversion_choices
+import netlib.utils
 from . import filt, utils, version
 from .proxy import config
 
@@ -100,31 +103,18 @@ def parse_setheader(s):
 
 
 def parse_server_spec(url):
-    p = http.parse_url(url)
-    if not p or not p[1] or p[0] not in ("http", "https"):
+    try:
+        p = netlib.utils.parse_url(url)
+        if p[0] not in ("http", "https"):
+            raise ValueError()
+    except ValueError:
         raise configargparse.ArgumentTypeError(
             "Invalid server specification: %s" % url
         )
 
-    if p[0].lower() == "https":
-        ssl = [True, True]
-    else:
-        ssl = [False, False]
-
-    return ssl + list(p[1:3])
-
-
-def parse_server_spec_special(url):
-    """
-    Provides additional support for http2https and https2http schemes.
-    """
-    normalized_url = re.sub("^https?2", "", url)
-    ret = parse_server_spec(normalized_url)
-    if url.lower().startswith("https2http"):
-        ret[0] = True
-    elif url.lower().startswith("http2https"):
-        ret[0] = False
-    return ret
+    address = Address(p[1:3])
+    scheme = p[0].lower()
+    return config.ServerSpec(scheme, address)
 
 
 def get_common_options(options):
@@ -189,24 +179,24 @@ def get_common_options(options):
         outfile=options.outfile,
         verbosity=options.verbose,
         nopop=options.nopop,
-        replay_ignore_content = options.replay_ignore_content,
-        replay_ignore_params = options.replay_ignore_params,
-        replay_ignore_payload_params = options.replay_ignore_payload_params,
-        replay_ignore_host = options.replay_ignore_host
+        replay_ignore_content=options.replay_ignore_content,
+        replay_ignore_params=options.replay_ignore_params,
+        replay_ignore_payload_params=options.replay_ignore_payload_params,
+        replay_ignore_host=options.replay_ignore_host
     )
 
 
-def common_options(parser):
+def basic_options(parser):
     parser.add_argument(
         '--version',
-        action= 'version',
-        version= "%(prog)s" + " " + version.VERSION
+        action='version',
+        version="%(prog)s" + " " + version.VERSION
     )
     parser.add_argument(
         '--shortversion',
-        action= 'version',
-        help = "show program's short version number and exit",
-        version = version.VERSION
+        action='version',
+        help="show program's short version number and exit",
+        version=version.VERSION
     )
     parser.add_argument(
         "--anticache",
@@ -298,11 +288,42 @@ def common_options(parser):
          """
     )
 
+
+def proxy_modes(parser):
+    group = parser.add_argument_group("Proxy Modes").add_mutually_exclusive_group()
+    group.add_argument(
+        "-R", "--reverse",
+        action="store",
+        type=parse_server_spec,
+        dest="reverse_proxy",
+        default=None,
+        help="""
+            Forward all requests to upstream HTTP server:
+            http[s][2http[s]]://host[:port]
+        """
+    )
+    group.add_argument(
+        "--socks",
+        action="store_true", dest="socks_proxy", default=False,
+        help="Set SOCKS5 proxy mode."
+    )
+    group.add_argument(
+        "-T", "--transparent",
+        action="store_true", dest="transparent_proxy", default=False,
+        help="Set transparent proxy mode."
+    )
+    group.add_argument(
+        "-U", "--upstream",
+        action="store",
+        type=parse_server_spec,
+        dest="upstream_proxy",
+        default=None,
+        help="Forward all requests to upstream proxy server: http://host[:port]"
+    )
+
+
+def proxy_options(parser):
     group = parser.add_argument_group("Proxy Options")
-    # We could make a mutually exclusive group out of -R, -U, -T, but we don't
-    # do that because  - --upstream-server should be in that group as well, but
-    # it's already in a different group.  - our own error messages are more
-    # helpful
     group.add_argument(
         "-b", "--bind-address",
         action="store", type=str, dest="addr", default='',
@@ -341,55 +362,92 @@ def common_options(parser):
         action="store", type=int, dest="port", default=8080,
         help="Proxy service port."
     )
+    http2 = group.add_mutually_exclusive_group()
+    http2.add_argument("--http2", action="store_true", dest="http2")
+    http2.add_argument("--no-http2", action="store_false", dest="http2",
+                       help="Explicitly enable/disable experimental HTTP2 support. "
+                            "Disabled by default. "
+                            "Default value will change in a future version."
+                       )
+    rawtcp = group.add_mutually_exclusive_group()
+    rawtcp.add_argument("--raw-tcp", action="store_true", dest="rawtcp")
+    rawtcp.add_argument("--no-raw-tcp", action="store_false", dest="rawtcp",
+                       help="Explicitly enable/disable experimental raw tcp support. "
+                            "Disabled by default. "
+                            "Default value will change in a future version."
+                       )
+
+
+def proxy_ssl_options(parser):
+    # TODO: Agree to consistently either use "upstream" or "server".
+    group = parser.add_argument_group("SSL")
     group.add_argument(
-        "-R", "--reverse",
-        action="store",
-        type=parse_server_spec_special,
-        dest="reverse_proxy",
-        default=None,
-        help="""
-            Forward all requests to upstream HTTP server:
-            http[s][2http[s]]://host[:port]
-        """
+        "--cert",
+        dest='certs',
+        default=[],
+        type=str,
+        metavar="SPEC",
+        action="append",
+        help='Add an SSL certificate. SPEC is of the form "[domain=]path". '
+             'The domain may include a wildcard, and is equal to "*" if not specified. '
+             'The file at path is a certificate in PEM format. If a private key is included '
+             'in the PEM, it is used, else the default key in the conf dir is used. '
+             'The PEM file should contain the full certificate chain, with the leaf certificate '
+             'as the first entry. Can be passed multiple times.')
+    group.add_argument(
+        "--ciphers-client", action="store",
+        type=str, dest="ciphers_client", default=config.DEFAULT_CLIENT_CIPHERS,
+        help="Set supported ciphers for client connections. (OpenSSL Syntax)"
     )
     group.add_argument(
-        "--socks",
-        action="store_true", dest="socks_proxy", default=False,
-        help="Set SOCKS5 proxy mode."
+        "--ciphers-server", action="store",
+        type=str, dest="ciphers_server", default=None,
+        help="Set supported ciphers for server connections. (OpenSSL Syntax)"
     )
     group.add_argument(
-        "-T", "--transparent",
-        action="store_true", dest="transparent_proxy", default=False,
-        help="Set transparent proxy mode."
+        "--client-certs", action="store",
+        type=str, dest="clientcerts", default=None,
+        help="Client certificate directory."
     )
     group.add_argument(
-        "-U", "--upstream",
-        action="store",
-        type=parse_server_spec,
-        dest="upstream_proxy",
-        default=None,
-        help="Forward all requests to upstream proxy server: http://host[:port]"
+        "--no-upstream-cert", default=False,
+        action="store_true", dest="no_upstream_cert",
+        help="Don't connect to upstream server to look up certificate details."
+    )
+    group.add_argument(
+        "--verify-upstream-cert", default=False,
+        action="store_true", dest="ssl_verify_upstream_cert",
+        help="Verify upstream server SSL/TLS certificates and fail if invalid "
+             "or not present."
+    )
+    group.add_argument(
+        "--upstream-trusted-cadir", default=None, action="store",
+        dest="ssl_verify_upstream_trusted_cadir",
+        help="Path to a directory of trusted CA certificates for upstream "
+             "server verification prepared using the c_rehash tool."
+    )
+    group.add_argument(
+        "--upstream-trusted-ca", default=None, action="store",
+        dest="ssl_verify_upstream_trusted_ca",
+        help="Path to a PEM formatted trusted CA certificate."
+    )
+    group.add_argument(
+        "--ssl-version-client", dest="ssl_version_client",
+        default="secure", action="store",
+        choices=sslversion_choices.keys(),
+        help="Set supported SSL/TLS versions for client connections. "
+             "SSLv2, SSLv3 and 'all' are INSECURE. Defaults to secure, which is TLS1.0+."
+    )
+    group.add_argument(
+        "--ssl-version-server", dest="ssl_version_server",
+        default="secure", action="store",
+        choices=sslversion_choices.keys(),
+        help="Set supported SSL/TLS versions for server connections. "
+             "SSLv2, SSLv3 and 'all' are INSECURE. Defaults to secure, which is TLS1.0+."
     )
 
-    group = parser.add_argument_group(
-        "Advanced Proxy Options",
-        """
-            The following options allow a custom adjustment of the proxy
-            behavior. Normally, you don't want to use these options directly and
-            use the provided wrappers instead (-R, -U, -T).
-        """
-    )
-    group.add_argument(
-        "--http-form-in", dest="http_form_in", default=None,
-        action="store", choices=("relative", "absolute"),
-        help="Override the HTTP request form accepted by the proxy"
-    )
-    group.add_argument(
-        "--http-form-out", dest="http_form_out", default=None,
-        action="store", choices=("relative", "absolute"),
-        help="Override the HTTP request form sent upstream by the proxy"
-    )
 
+def onboarding_app(parser):
     group = parser.add_argument_group("Onboarding App")
     group.add_argument(
         "--noapp",
@@ -415,6 +473,8 @@ def common_options(parser):
         help="Port to serve the onboarding app from."
     )
 
+
+def client_replay(parser):
     group = parser.add_argument_group("Client Replay")
     group.add_argument(
         "-c", "--client-replay",
@@ -422,6 +482,8 @@ def common_options(parser):
         help="Replay client requests from a saved file."
     )
 
+
+def server_replay(parser):
     group = parser.add_argument_group("Server Replay")
     group.add_argument(
         "-S", "--server-replay",
@@ -486,6 +548,8 @@ def common_options(parser):
         default=False,
         help="Ignore request's destination host while searching for a saved flow to replay")
 
+
+def replacements(parser):
     group = parser.add_argument_group(
         "Replacements",
         """
@@ -502,14 +566,16 @@ def common_options(parser):
     )
     group.add_argument(
         "--replace-from-file",
-        action = "append", type=str, dest="replace_file", default=[],
-        metavar = "PATH",
-        help = """
+        action="append", type=str, dest="replace_file", default=[],
+        metavar="PATH",
+        help="""
             Replacement pattern, where the replacement clause is a path to a
             file.
         """
     )
 
+
+def set_headers(parser):
     group = parser.add_argument_group(
         "Set Headers",
         """
@@ -525,21 +591,22 @@ def common_options(parser):
         help="Header set pattern."
     )
 
+
+def proxy_authentication(parser):
     group = parser.add_argument_group(
         "Proxy Authentication",
         """
             Specify which users are allowed to access the proxy and the method
             used for authenticating them.
         """
-    )
-    user_specification_group = group.add_mutually_exclusive_group()
-    user_specification_group.add_argument(
+    ).add_mutually_exclusive_group()
+    group.add_argument(
         "--nonanonymous",
         action="store_true", dest="auth_nonanonymous",
         help="Allow access to any user long as a credentials are specified."
     )
 
-    user_specification_group.add_argument(
+    group.add_argument(
         "--singleuser",
         action="store", dest="auth_singleuser", type=str,
         metavar="USER",
@@ -548,14 +615,25 @@ def common_options(parser):
             username:password.
         """
     )
-    user_specification_group.add_argument(
+    group.add_argument(
         "--htpasswd",
         action="store", dest="auth_htpasswd", type=str,
         metavar="PATH",
         help="Allow access to users specified in an Apache htpasswd file."
     )
 
-    config.ssl_option_group(parser)
+
+def common_options(parser):
+    basic_options(parser)
+    proxy_modes(parser)
+    proxy_options(parser)
+    proxy_ssl_options(parser)
+    onboarding_app(parser)
+    client_replay(parser)
+    server_replay(parser)
+    replacements(parser)
+    set_headers(parser)
+    proxy_authentication(parser)
 
 
 def mitmproxy():
@@ -565,13 +643,13 @@ def mitmproxy():
 
     parser = configargparse.ArgumentParser(
         usage="%(prog)s [options]",
-        args_for_setting_config_path = ["--conf"],
-        default_config_files = [
+        args_for_setting_config_path=["--conf"],
+        default_config_files=[
             os.path.join(config.CA_DIR, "common.conf"),
             os.path.join(config.CA_DIR, "mitmproxy.conf")
         ],
-        add_config_file_help = True,
-        add_env_var_help = True
+        add_config_file_help=True,
+        add_env_var_help=True
     )
     common_options(parser)
     parser.add_argument(
@@ -589,6 +667,11 @@ def mitmproxy():
         "-e", "--eventlog",
         action="store_true", dest="eventlog",
         help="Show event log."
+    )
+    parser.add_argument(
+        "--no-mouse",
+        action="store_true", dest="no_mouse",
+        help="Disable mouse interaction."
     )
     group = parser.add_argument_group(
         "Filters",
@@ -610,20 +693,20 @@ def mitmproxy():
 def mitmdump():
     parser = configargparse.ArgumentParser(
         usage="%(prog)s [options] [filter]",
-        args_for_setting_config_path = ["--conf"],
-        default_config_files = [
+        args_for_setting_config_path=["--conf"],
+        default_config_files=[
             os.path.join(config.CA_DIR, "common.conf"),
             os.path.join(config.CA_DIR, "mitmdump.conf")
         ],
-        add_config_file_help = True,
-        add_env_var_help = True
+        add_config_file_help=True,
+        add_env_var_help=True
     )
 
     common_options(parser)
     parser.add_argument(
         "--keepserving",
-        action= "store_true", dest="keepserving", default=False,
-        help= """
+        action="store_true", dest="keepserving", default=False,
+        help="""
             Continue serving after client playback or file read. We exit by
             default.
         """
@@ -640,13 +723,13 @@ def mitmdump():
 def mitmweb():
     parser = configargparse.ArgumentParser(
         usage="%(prog)s [options]",
-        args_for_setting_config_path = ["--conf"],
-        default_config_files = [
+        args_for_setting_config_path=["--conf"],
+        default_config_files=[
             os.path.join(config.CA_DIR, "common.conf"),
             os.path.join(config.CA_DIR, "mitmweb.conf")
         ],
-        add_config_file_help = True,
-        add_env_var_help = True
+        add_config_file_help=True,
+        add_env_var_help=True
     )
 
     group = parser.add_argument_group("Mitmweb")

@@ -1,14 +1,22 @@
 import socket
 import time
-from libmproxy.proxy.config import HostMatcher
-import libpathod
-from netlib import tcp, http_auth, http
-from libpathod import pathoc, pathod
+from OpenSSL import SSL
+from netlib.exceptions import HttpReadDisconnect, HttpException
+from netlib.tcp import Address
+
+import netlib.tutils
+from netlib import tcp, http, socks
 from netlib.certutils import SSLCert
+from netlib.http import authentication, CONTENT_MISSING, http1
+from netlib.tutils import raises
+from libpathod import pathoc, pathod
+
+from libmproxy.proxy.config import HostMatcher
+from libmproxy.protocol import Kill
+from libmproxy.models import Error, HTTPResponse
+
 import tutils
 import tservers
-from libmproxy.protocol import KILL, Error
-from libmproxy.protocol.http import CONTENT_MISSING
 
 """
     Note that the choice of response code in these tests matters more than you
@@ -41,18 +49,18 @@ class CommonMixin:
         else:
             assert len(self.master.state.view) == 1
         l = self.master.state.view[-1]
-        assert l.response.code == 304
+        assert l.response.status_code == 304
         l.request.path = "/p/305"
         self.wait_until_not_live(l)
         rt = self.master.replay_request(l, block=True)
-        assert l.response.code == 305
+        assert l.response.status_code == 305
 
         # Disconnect error
         l.request.path = "/p/305:d0"
         rt = self.master.replay_request(l, block=True)
         assert not rt
         if isinstance(self, tservers.HTTPUpstreamProxTest):
-            assert l.response.code == 502
+            assert l.response.status_code == 502
         else:
             assert l.error
 
@@ -63,8 +71,8 @@ class CommonMixin:
         # SSL with the upstream proxy.
         rt = self.master.replay_request(l, block=True)
         assert not rt
-        if isinstance(self, tservers.HTTPUpstreamProxTest) and not self.ssl:
-            assert l.response.code == 502
+        if isinstance(self, tservers.HTTPUpstreamProxTest):
+            assert l.response.status_code == 502
         else:
             assert l.error
 
@@ -77,7 +85,7 @@ class CommonMixin:
         l = self.master.state.view[-1]
         assert l.client_conn.address
         assert "host" in l.request.headers
-        assert l.response.code == 304
+        assert l.response.status_code == 304
 
     def test_invalid_http(self):
         t = tcp.TCPClient(("127.0.0.1", self.proxy.port))
@@ -110,17 +118,20 @@ class TcpMixin:
         del self._ignore_backup
 
     def test_ignore(self):
-        spec = '304:h"Alternate-Protocol"="mitmproxy-will-remove-this"'
-        n = self.pathod(spec)
+        n = self.pathod("304")
         self._ignore_on()
-        i = self.pathod(spec)
-        i2 = self.pathod(spec)
+        i = self.pathod("305")
+        i2 = self.pathod("306")
         self._ignore_off()
 
-        assert i.status_code == i2.status_code == n.status_code == 304
-        assert "Alternate-Protocol" in i.headers
-        assert "Alternate-Protocol" in i2.headers
-        assert "Alternate-Protocol" not in n.headers
+        self.master.masterq.join()
+
+        assert n.status_code == 304
+        assert i.status_code == 305
+        assert i2.status_code == 306
+        assert any(f.response.status_code == 304 for f in self.master.state.flows)
+        assert not any(f.response.status_code == 305 for f in self.master.state.flows)
+        assert not any(f.response.status_code == 306 for f in self.master.state.flows)
 
         # Test that we get the original SSL cert
         if self.ssl:
@@ -136,10 +147,9 @@ class TcpMixin:
         # mitmproxy responds with bad gateway
         assert self.pathod(spec).status_code == 502
         self._ignore_on()
-        tutils.raises(
-            "invalid server response",
-            self.pathod,
-            spec)  # pathoc tries to parse answer as HTTP
+        with raises(HttpException):
+            self.pathod(spec)  # pathoc tries to parse answer as HTTP
+
         self._ignore_off()
 
     def _tcpproxy_on(self):
@@ -150,21 +160,24 @@ class TcpMixin:
 
     def _tcpproxy_off(self):
         assert hasattr(self, "_tcpproxy_backup")
-        self.config.check_ignore = self._tcpproxy_backup
+        self.config.check_tcp = self._tcpproxy_backup
         del self._tcpproxy_backup
 
     def test_tcp(self):
-        spec = '304:h"Alternate-Protocol"="mitmproxy-will-remove-this"'
-        n = self.pathod(spec)
+        n = self.pathod("304")
         self._tcpproxy_on()
-        i = self.pathod(spec)
-        i2 = self.pathod(spec)
+        i = self.pathod("305")
+        i2 = self.pathod("306")
         self._tcpproxy_off()
 
-        assert i.status_code == i2.status_code == n.status_code == 304
-        assert "Alternate-Protocol" in i.headers
-        assert "Alternate-Protocol" in i2.headers
-        assert "Alternate-Protocol" not in n.headers
+        self.master.masterq.join()
+
+        assert n.status_code == 304
+        assert i.status_code == 305
+        assert i2.status_code == 306
+        assert any(f.response.status_code == 304 for f in self.master.state.flows)
+        assert not any(f.response.status_code == 305 for f in self.master.state.flows)
+        assert not any(f.response.status_code == 306 for f in self.master.state.flows)
 
         # Test that we get the original SSL cert
         if self.ssl:
@@ -175,7 +188,8 @@ class TcpMixin:
             assert i_cert == i2_cert == n_cert
 
         # Make sure that TCP messages are in the event log.
-        assert any("mitmproxy-will-remove-this" in m for m in self.master.log)
+        assert any("305" in m for m in self.master.log)
+        assert any("306" in m for m in self.master.log)
 
 
 class AppMixin:
@@ -221,7 +235,8 @@ class TestHTTP(tservers.HTTPProxTest, CommonMixin, AppMixin):
         # There's a race here, which means we can get any of a number of errors.
         # Rather than introduce yet another sleep into the test suite, we just
         # relax the Exception specification.
-        tutils.raises(Exception, p.request, "get:'%s'" % response)
+        with raises(Exception):
+            p.request("get:'%s'" % response)
 
     def test_reconnect(self):
         req = "get:'%s/p/200:b@1:da'" % self.server.urlbase
@@ -236,16 +251,12 @@ class TestHTTP(tservers.HTTPProxTest, CommonMixin, AppMixin):
             for i in l:
                 if "serverdisconnect" in i:
                     return True
+
         req = "get:'%s/p/200:b@1'"
         p = self.pathoc()
         assert p.request(req % self.server.urlbase)
         assert p.request(req % self.server2.urlbase)
         assert switched(self.proxy.log)
-
-    def test_get_connection_err(self):
-        p = self.pathoc()
-        ret = p.request("get:'http://localhost:0'")
-        assert ret.status_code == 502
 
     def test_blank_leading_line(self):
         p = self.pathoc()
@@ -254,23 +265,8 @@ class TestHTTP(tservers.HTTPProxTest, CommonMixin, AppMixin):
 
     def test_invalid_headers(self):
         p = self.pathoc()
-        req = p.request("get:'http://foo':h':foo'='bar'")
-        assert req.status_code == 400
-
-    def test_empty_chunked_content(self):
-        """
-        https://github.com/mitmproxy/mitmproxy/issues/186
-        """
-        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connection.connect(("127.0.0.1", self.proxy.port))
-        spec = '301:h"Transfer-Encoding"="chunked":r:b"0\\r\\n\\r\\n"'
-        connection.send(
-            "GET http://localhost:%d/p/%s HTTP/1.1\r\n" %
-            (self.server.port, spec))
-        connection.send("\r\n")
-        resp = connection.recv(50000)
-        connection.close()
-        assert "content-length" in resp.lower()
+        resp = p.request("get:'http://foo':h':foo'='bar'")
+        assert resp.status_code == 400
 
     def test_stream(self):
         self.master.set_stream_large_bodies(1024 * 2)
@@ -293,8 +289,8 @@ class TestHTTP(tservers.HTTPProxTest, CommonMixin, AppMixin):
 
 
 class TestHTTPAuth(tservers.HTTPProxTest):
-    authenticator = http_auth.BasicProxyAuth(
-        http_auth.PassManSingleUser(
+    authenticator = http.authentication.BasicProxyAuth(
+        http.authentication.PassManSingleUser(
             "test",
             "test"),
         "realm")
@@ -308,21 +304,10 @@ class TestHTTPAuth(tservers.HTTPProxTest):
             h'%s'='%s'
         """ % (
             self.server.port,
-            http_auth.BasicProxyAuth.AUTH_HEADER,
-            http.assemble_http_basic_auth("basic", "test", "test")
+            http.authentication.BasicProxyAuth.AUTH_HEADER,
+            authentication.assemble_http_basic_auth("basic", "test", "test")
         ))
         assert ret.status_code == 202
-
-
-class TestHTTPConnectSSLError(tservers.HTTPProxTest):
-    certfile = True
-
-    def test_go(self):
-        self.config.ssl_ports.append(self.proxy.port)
-        p = self.pathoc_raw()
-        dst = ("localhost", self.proxy.port)
-        p.connect(connect_to=dst)
-        tutils.raises("502 - Bad Gateway", p.http_connect, dst)
 
 
 class TestHTTPS(tservers.HTTPProxTest, CommonMixin, TcpMixin):
@@ -348,13 +333,77 @@ class TestHTTPSCertfile(tservers.HTTPProxTest, CommonMixin):
         assert self.pathod("304")
 
 
+class TestHTTPSUpstreamServerVerificationWTrustedCert(tservers.HTTPProxTest):
+    """
+    Test upstream server certificate verification with a trusted server cert.
+    """
+    ssl = True
+    ssloptions = pathod.SSLOptions(
+        cn="trusted-cert",
+        certs=[
+            ("trusted-cert", tutils.test_data.path("data/trusted-server.crt"))
+        ])
+
+    def test_verification_w_cadir(self):
+        self.config.openssl_verification_mode_server = SSL.VERIFY_PEER
+        self.config.openssl_trusted_cadir_server = tutils.test_data.path(
+            "data/trusted-cadir/")
+
+        self.pathoc()
+
+    def test_verification_w_pemfile(self):
+        self.config.openssl_verification_mode_server = SSL.VERIFY_PEER
+        self.config.openssl_trusted_ca_server = tutils.test_data.path(
+            "data/trusted-cadir/trusted-ca.pem")
+
+        self.pathoc()
+
+
+class TestHTTPSUpstreamServerVerificationWBadCert(tservers.HTTPProxTest):
+    """
+    Test upstream server certificate verification with an untrusted server cert.
+    """
+    ssl = True
+    ssloptions = pathod.SSLOptions(
+        cn="untrusted-cert",
+        certs=[
+            ("untrusted-cert", tutils.test_data.path("data/untrusted-server.crt"))
+        ])
+
+    def _request(self):
+        p = self.pathoc()
+        # We need to make an actual request because the upstream connection is lazy-loaded.
+        return p.request("get:/p/242")
+
+    def test_default_verification_w_bad_cert(self):
+        """Should use no verification."""
+        self.config.openssl_trusted_ca_server = tutils.test_data.path(
+            "data/trusted-cadir/trusted-ca.pem")
+
+        assert self._request().status_code == 242
+
+    def test_no_verification_w_bad_cert(self):
+        self.config.openssl_verification_mode_server = SSL.VERIFY_NONE
+        self.config.openssl_trusted_ca_server = tutils.test_data.path(
+            "data/trusted-cadir/trusted-ca.pem")
+
+        assert self._request().status_code == 242
+
+    def test_verification_w_bad_cert(self):
+        self.config.openssl_verification_mode_server = SSL.VERIFY_PEER
+        self.config.openssl_trusted_ca_server = tutils.test_data.path(
+            "data/trusted-cadir/trusted-ca.pem")
+
+        assert self._request().status_code == 502
+
+
 class TestHTTPSNoCommonName(tservers.HTTPProxTest):
     """
     Test what happens if we get a cert without common name back.
     """
     ssl = True
     ssloptions = pathod.SSLOptions(
-        certs = [
+        certs=[
             ("*", tutils.test_data.path("data/no_common_name.pem"))
         ]
     )
@@ -368,19 +417,56 @@ class TestReverse(tservers.ReverseProxTest, CommonMixin, TcpMixin):
     reverse = True
 
 
+class TestSocks5(tservers.SocksModeTest):
+    def test_simple(self):
+        p = self.pathoc()
+        p.socks_connect(("localhost", self.server.port))
+        f = p.request("get:/p/200")
+        assert f.status_code == 200
+
+    def test_with_authentication_only(self):
+        p = self.pathoc()
+        f = p.request("get:/p/200")
+        assert f.status_code == 502
+        assert "SOCKS5 mode failure" in f.content
+
+    def test_no_connect(self):
+        """
+        mitmproxy doesn't support UDP or BIND SOCKS CMDs
+        """
+        p = self.pathoc()
+
+        socks.ClientGreeting(
+            socks.VERSION.SOCKS5,
+            [socks.METHOD.NO_AUTHENTICATION_REQUIRED]
+        ).to_file(p.wfile)
+        socks.Message(
+            socks.VERSION.SOCKS5,
+            socks.CMD.BIND,
+            socks.ATYP.DOMAINNAME,
+            ("example.com", 8080)
+        ).to_file(p.wfile)
+
+        p.wfile.flush()
+        p.rfile.read(2)  # read server greeting
+        f = p.request("get:/p/200")  # the request doesn't matter, error response from handshake will be read anyway.
+        assert f.status_code == 502
+        assert "SOCKS5 mode failure" in f.content
+
+
 class TestHttps2Http(tservers.ReverseProxTest):
     @classmethod
     def get_proxy_config(cls):
         d = super(TestHttps2Http, cls).get_proxy_config()
-        d["upstream_server"][0] = True
+        d["upstream_server"] = ("http", d["upstream_server"][1])
         return d
 
     def pathoc(self, ssl, sni=None):
         """
             Returns a connected Pathoc instance.
         """
-        p = libpathod.pathoc.Pathoc(
-            ("localhost", self.proxy.port), ssl=ssl, sni=sni, fp=None
+        p = pathoc.Pathoc(
+            ("localhost", self.proxy.port), ssl=True, sni=sni, fp=None
         )
         p.connect()
         return p
@@ -396,7 +482,7 @@ class TestHttps2Http(tservers.ReverseProxTest):
 
     def test_http(self):
         p = self.pathoc(ssl=False)
-        assert p.request("get:'/p/200'").status_code == 400
+        assert p.request("get:'/p/200'").status_code == 200
 
 
 class TestTransparent(tservers.TransparentProxTest, CommonMixin, TcpMixin):
@@ -410,7 +496,7 @@ class TestTransparentSSL(tservers.TransparentProxTest, CommonMixin, TcpMixin):
         p = pathoc.Pathoc(("localhost", self.proxy.port), fp=None)
         p.connect()
         r = p.request("get:/")
-        assert r.status_code == 400
+        assert r.status_code == 502
 
 
 class TestProxy(tservers.HTTPProxTest):
@@ -421,16 +507,16 @@ class TestProxy(tservers.HTTPProxTest):
         f = self.master.state.view[0]
         assert f.client_conn.address
         assert "host" in f.request.headers
-        assert f.response.code == 304
+        assert f.response.status_code == 304
 
     def test_response_timestamps(self):
-        # test that we notice at least 2 sec delay between timestamps
+        # test that we notice at least 1 sec delay between timestamps
         # in response object
         f = self.pathod("304:b@1k:p50,1")
         assert f.status_code == 304
 
         response = self.master.state.view[0].response
-        assert 1 <= response.timestamp_end - response.timestamp_start <= 1.2
+        assert 0.9 <= response.timestamp_end - response.timestamp_start <= 1.2
 
     def test_request_timestamps(self):
         # test that we notice a delay between timestamps in request object
@@ -447,10 +533,11 @@ class TestProxy(tservers.HTTPProxTest):
         connection.close()
 
         request, response = self.master.state.view[
-            0].request, self.master.state.view[0].response
-        assert response.code == 304  # sanity test for our low level request
-        # time.sleep might be a little bit shorter than a second
-        assert 0.95 < (request.timestamp_end - request.timestamp_start) < 1.2
+                                0].request, self.master.state.view[0].response
+        assert response.status_code == 304  # sanity test for our low level request
+        # time.sleep might be a little bit shorter than a second,
+        # we observed up to 0.93s on appveyor.
+        assert 0.8 < (request.timestamp_end - request.timestamp_start) < 1.2
 
     def test_request_timestamps_not_affected_by_client_time(self):
         # test that don't include user wait time in request's timestamps
@@ -471,15 +558,20 @@ class TestProxy(tservers.HTTPProxTest):
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection.connect(("localhost", self.proxy.port))
         connection.send(
-            "GET http://localhost:%d/p/304:b@1k HTTP/1.1\r\n" %
+            "GET http://localhost:%d/p/200:b@1k HTTP/1.1\r\n" %
             self.server.port)
         connection.send("\r\n")
-        connection.recv(5000)
+        # a bit hacky: make sure that we don't just read the headers only.
+        recvd = 0
+        while recvd < 1024:
+            recvd += len(connection.recv(5000))
         connection.send(
-            "GET http://localhost:%d/p/304:b@1k HTTP/1.1\r\n" %
+            "GET http://localhost:%d/p/200:b@1k HTTP/1.1\r\n" %
             self.server.port)
         connection.send("\r\n")
-        connection.recv(5000)
+        recvd = 0
+        while recvd < 1024:
+            recvd += len(connection.recv(5000))
         connection.close()
 
         first_flow = self.master.state.view[0]
@@ -511,63 +603,64 @@ class MasterRedirectRequest(tservers.TestMaster):
     redirect_port = None  # Set by TestRedirectRequest
 
     def handle_request(self, f):
-        request = f.request
-        if request.path == "/p/201":
-            addr = f.live.c.server_conn.address
-            assert f.live.change_server(
-                ("127.0.0.1", self.redirect_port), ssl=False)
-            assert not f.live.change_server(
-                ("127.0.0.1", self.redirect_port), ssl=False)
-            tutils.raises(
-                "SSL handshake error",
-                f.live.change_server,
-                ("127.0.0.1",
-                 self.redirect_port),
-                ssl=True)
-            assert f.live.change_server(addr, ssl=False)
-            request.url = "http://127.0.0.1:%s/p/201" % self.redirect_port
-        tservers.TestMaster.handle_request(self, f)
+        if f.request.path == "/p/201":
+
+            # This part should have no impact, but it should also not cause any exceptions.
+            addr = f.live.server_conn.address
+            addr2 = Address(("127.0.0.1", self.redirect_port))
+            f.live.set_server(addr2)
+            f.live.set_server(addr)
+
+            # This is the actual redirection.
+            f.request.port = self.redirect_port
+        super(MasterRedirectRequest, self).handle_request(f)
 
     def handle_response(self, f):
         f.response.content = str(f.client_conn.address.port)
-        f.response.headers[
-            "server-conn-id"] = [str(f.server_conn.source_address.port)]
-        tservers.TestMaster.handle_response(self, f)
+        f.response.headers["server-conn-id"] = str(f.server_conn.source_address.port)
+        super(MasterRedirectRequest, self).handle_response(f)
 
 
 class TestRedirectRequest(tservers.HTTPProxTest):
     masterclass = MasterRedirectRequest
+    ssl = True
 
     def test_redirect(self):
+        """
+        Imagine a single HTTPS connection with three requests:
+
+        1. First request should pass through unmodified
+        2. Second request will be redirected to a different host by an inline script
+        3. Third request should pass through unmodified
+
+        This test verifies that the original destination is restored for the third request.
+        """
         self.master.redirect_port = self.server2.port
 
         p = self.pathoc()
 
         self.server.clear_log()
         self.server2.clear_log()
-        r1 = p.request("get:'%s/p/200'" % self.server.urlbase)
+        r1 = p.request("get:'/p/200'")
         assert r1.status_code == 200
         assert self.server.last_log()
         assert not self.server2.last_log()
 
         self.server.clear_log()
         self.server2.clear_log()
-        r2 = p.request("get:'%s/p/201'" % self.server.urlbase)
+        r2 = p.request("get:'/p/201'")
         assert r2.status_code == 201
         assert not self.server.last_log()
         assert self.server2.last_log()
 
         self.server.clear_log()
         self.server2.clear_log()
-        r3 = p.request("get:'%s/p/202'" % self.server.urlbase)
+        r3 = p.request("get:'/p/202'")
         assert r3.status_code == 202
         assert self.server.last_log()
         assert not self.server2.last_log()
 
         assert r1.content == r2.content == r3.content
-        assert r1.headers.get_first(
-            "server-conn-id") == r3.headers.get_first("server-conn-id")
-        # Make sure that we actually use the same connection in this test case
 
 
 class MasterStreamRequest(tservers.TestMaster):
@@ -609,40 +702,29 @@ class TestStreamRequest(tservers.HTTPProxTest):
         assert self.server.last_log()
 
     def test_stream_chunked(self):
-
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection.connect(("127.0.0.1", self.proxy.port))
         fconn = connection.makefile()
-        spec = '200:h"Transfer-Encoding"="chunked":r:b"4\\r\\nthis\\r\\n7\\r\\nisatest\\r\\n0\\r\\n\\r\\n"'
+        spec = '200:h"Transfer-Encoding"="chunked":r:b"4\\r\\nthis\\r\\n11\\r\\nisatest__reachhex\\r\\n0\\r\\n\\r\\n"'
         connection.send(
             "GET %s/p/%s HTTP/1.1\r\n" %
             (self.server.urlbase, spec))
         connection.send("\r\n")
 
-        httpversion, code, msg, headers, content = http.read_response(
-            fconn, "GET", None, include_body=False)
+        resp = http1.read_response_head(fconn)
 
-        assert headers["Transfer-Encoding"][0] == 'chunked'
-        assert code == 200
+        assert resp.headers["Transfer-Encoding"] == 'chunked'
+        assert resp.status_code == 200
 
-        chunks = list(
-            content for _,
-            content,
-            _ in http.read_http_body_chunked(
-                fconn,
-                headers,
-                None,
-                "GET",
-                200,
-                False))
-        assert chunks == ["this", "isatest", ""]
+        chunks = list(http1.read_body(fconn, None))
+        assert chunks == ["this", "isatest__reachhex"]
 
         connection.close()
 
 
 class MasterFakeResponse(tservers.TestMaster):
     def handle_request(self, f):
-        resp = tutils.tresp()
+        resp = HTTPResponse.wrap(netlib.tutils.tresp())
         f.reply(resp)
 
 
@@ -651,33 +733,46 @@ class TestFakeResponse(tservers.HTTPProxTest):
 
     def test_fake(self):
         f = self.pathod("200")
-        assert "header_response" in f.headers.keys()
+        assert "header-response" in f.headers
+
+
+class TestServerConnect(tservers.HTTPProxTest):
+    masterclass = MasterFakeResponse
+    no_upstream_cert = True
+    ssl = True
+    def test_unnecessary_serverconnect(self):
+        """A replayed/fake response with no_upstream_cert should not connect to an upstream server"""
+        assert self.pathod("200").status_code == 200
+        for msg in self.proxy.tmaster.log:
+            assert "serverconnect" not in msg
 
 
 class MasterKillRequest(tservers.TestMaster):
     def handle_request(self, f):
-        f.reply(KILL)
+        f.reply(Kill)
 
 
 class TestKillRequest(tservers.HTTPProxTest):
     masterclass = MasterKillRequest
 
     def test_kill(self):
-        tutils.raises("server disconnect", self.pathod, "200")
+        with raises(HttpReadDisconnect):
+            self.pathod("200")
         # Nothing should have hit the server
         assert not self.server.last_log()
 
 
 class MasterKillResponse(tservers.TestMaster):
     def handle_response(self, f):
-        f.reply(KILL)
+        f.reply(Kill)
 
 
 class TestKillResponse(tservers.HTTPProxTest):
     masterclass = MasterKillResponse
 
     def test_kill(self):
-        tutils.raises("server disconnect", self.pathod, "200")
+        with raises(HttpReadDisconnect):
+            self.pathod("200")
         # The server should have seen a request
         assert self.server.last_log()
 
@@ -696,7 +791,7 @@ class TestTransparentResolveError(tservers.TransparentProxTest):
 
 class MasterIncomplete(tservers.TestMaster):
     def handle_request(self, f):
-        resp = tutils.tresp()
+        resp = HTTPResponse.wrap(netlib.tutils.tresp())
         resp.content = CONTENT_MISSING
         f.reply(resp)
 
@@ -706,14 +801,6 @@ class TestIncompleteResponse(tservers.HTTPProxTest):
 
     def test_incomplete(self):
         assert self.pathod("200").status_code == 502
-
-
-class TestCertForward(tservers.HTTPProxTest):
-    certforward = True
-    ssl = True
-
-    def test_app_err(self):
-        tutils.raises("handshake error", self.pathod, "200:b@100")
 
 
 class TestUpstreamProxy(tservers.HTTPUpstreamProxTest, CommonMixin, AppMixin):
@@ -738,9 +825,9 @@ class TestUpstreamProxy(tservers.HTTPUpstreamProxTest, CommonMixin, AppMixin):
 
 
 class TestUpstreamProxySSL(
-        tservers.HTTPUpstreamProxTest,
-        CommonMixin,
-        TcpMixin):
+    tservers.HTTPUpstreamProxTest,
+    CommonMixin,
+    TcpMixin):
     ssl = True
 
     def _host_pattern_on(self, attr):
@@ -806,21 +893,6 @@ class TestUpstreamProxySSL(
         # request from chain[0] (regular proxy doesn't store CONNECTs)
         assert self.chain[1].tmaster.state.flow_count() == 1
 
-    def test_closing_connect_response(self):
-        """
-        https://github.com/mitmproxy/mitmproxy/issues/313
-        """
-        def handle_request(f):
-            f.request.httpversion = (1, 0)
-            del f.request.headers["Content-Length"]
-            f.reply()
-        _handle_request = self.chain[0].tmaster.handle_request
-        self.chain[0].tmaster.handle_request = handle_request
-        try:
-            assert self.pathoc().request("get:/p/418").status_code == 418
-        finally:
-            self.chain[0].tmaster.handle_request = _handle_request
-
 
 class TestProxyChainingSSLReconnect(tservers.HTTPUpstreamProxTest):
     ssl = True
@@ -831,6 +903,7 @@ class TestProxyChainingSSLReconnect(tservers.HTTPUpstreamProxTest):
         If we have a disconnect on a secure connection that's transparently proxified to
         an upstream http proxy, we need to send the CONNECT request again.
         """
+
         def kill_requests(master, attr, exclude):
             k = [0]  # variable scope workaround: put into array
             _func = getattr(master, attr)
@@ -840,26 +913,30 @@ class TestProxyChainingSSLReconnect(tservers.HTTPUpstreamProxTest):
                 if not (k[0] in exclude):
                     f.client_conn.finish()
                     f.error = Error("terminated")
-                    f.reply(KILL)
+                    f.reply(Kill)
                 return _func(f)
+
             setattr(master, attr, handler)
 
         kill_requests(self.chain[1].tmaster, "handle_request",
                       exclude=[
-            # fail first request
+                          # fail first request
                           2,  # allow second request
-        ])
+                      ])
 
         kill_requests(self.chain[0].tmaster, "handle_request",
                       exclude=[
                           1,  # CONNECT
-                              # fail first request
+                          # fail first request
                           3,  # reCONNECT
                           4,  # request
-        ])
+                      ])
 
         p = self.pathoc()
         req = p.request("get:'/p/418:b\"content\"'")
+        assert req.content == "content"
+        assert req.status_code == 418
+
         assert self.proxy.tmaster.state.flow_count() == 2  # CONNECT and request
         # CONNECT, failing request,
         assert self.chain[0].tmaster.state.flow_count() == 4
@@ -868,8 +945,7 @@ class TestProxyChainingSSLReconnect(tservers.HTTPUpstreamProxTest):
         assert self.chain[1].tmaster.state.flow_count() == 2
         # (doesn't store (repeated) CONNECTs from chain[0]
         #  as it is a regular proxy)
-        assert req.content == "content"
-        assert req.status_code == 418
+
 
         assert not self.chain[1].tmaster.state.flows[0].response  # killed
         assert self.chain[1].tmaster.state.flows[1].response
@@ -878,18 +954,18 @@ class TestProxyChainingSSLReconnect(tservers.HTTPUpstreamProxTest):
         assert self.proxy.tmaster.state.flows[1].request.form_in == "relative"
 
         assert self.chain[0].tmaster.state.flows[
-            0].request.form_in == "authority"
+                   0].request.form_in == "authority"
         assert self.chain[0].tmaster.state.flows[
-            1].request.form_in == "relative"
+                   1].request.form_in == "relative"
         assert self.chain[0].tmaster.state.flows[
-            2].request.form_in == "authority"
+                   2].request.form_in == "authority"
         assert self.chain[0].tmaster.state.flows[
-            3].request.form_in == "relative"
+                   3].request.form_in == "relative"
 
         assert self.chain[1].tmaster.state.flows[
-            0].request.form_in == "relative"
+                   0].request.form_in == "relative"
         assert self.chain[1].tmaster.state.flows[
-            1].request.form_in == "relative"
+                   1].request.form_in == "relative"
 
         req = p.request("get:'/p/418:b\"content2\"'")
 

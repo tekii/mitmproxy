@@ -10,7 +10,7 @@ def start(context, argv):
     context.log("start")
 
 
-def clientconnect(context, conn_handler):
+def clientconnect(context, root_layer):
     """
         Called when a client initiates a connection to the proxy. Note that a
         connection can correspond to multiple HTTP requests
@@ -18,19 +18,19 @@ def clientconnect(context, conn_handler):
     context.log("clientconnect")
 
 
-def serverconnect(context, conn_handler):
-    """
-        Called when the proxy initiates a connection to the target server. Note that a
-        connection can correspond to multiple HTTP requests
-    """
-    context.log("serverconnect")
-
-
 def request(context, flow):
     """
         Called when a client request has been received.
     """
     context.log("request")
+
+
+def serverconnect(context, server_conn):
+    """
+        Called when the proxy initiates a connection to the target server. Note that a
+        connection can correspond to multiple HTTP requests
+    """
+    context.log("serverconnect")
 
 
 def responseheaders(context, flow):
@@ -58,7 +58,14 @@ def error(context, flow):
     context.log("error")
 
 
-def clientdisconnect(context, conn_handler):
+def serverdisconnect(context, server_conn):
+    """
+        Called when the proxy closes the connection to the target server.
+    """
+    context.log("serverdisconnect")
+
+
+def clientdisconnect(context, root_layer):
     """
         Called when a client disconnects from the proxy.
     """

@@ -3,15 +3,18 @@ import time
 import os.path
 from cStringIO import StringIO
 import email.utils
+
 import mock
+
+import netlib.utils
 from netlib import odict
-from libmproxy import filt, protocol, controller, utils, tnetstring, flow
-from libmproxy.protocol.primitives import Error, Flow
-from libmproxy.protocol.http import decoded, CONTENT_MISSING
+from netlib.http import CONTENT_MISSING, Headers
+from libmproxy import filt, controller, tnetstring, flow
+from libmproxy.models import Error, Flow, HTTPRequest, HTTPResponse, HTTPFlow, decoded
 from libmproxy.proxy.config import HostMatcher
 from libmproxy.proxy import ProxyConfig
 from libmproxy.proxy.server import DummyServer
-from libmproxy.proxy.connection import ClientConnection
+from libmproxy.models.connections import ClientConnection
 import tutils
 
 
@@ -19,7 +22,7 @@ def test_app_registry():
     ar = flow.AppRegistry()
     ar.add("foo", "domain", 80)
 
-    r = tutils.treq()
+    r = HTTPRequest.wrap(netlib.tutils.treq())
     r.host = "domain"
     r.port = 80
     assert ar.get(r)
@@ -27,19 +30,19 @@ def test_app_registry():
     r.port = 81
     assert not ar.get(r)
 
-    r = tutils.treq()
+    r = HTTPRequest.wrap(netlib.tutils.treq())
     r.host = "domain2"
     r.port = 80
     assert not ar.get(r)
-    r.headers["host"] = ["domain"]
+    r.headers["host"] = "domain"
     assert ar.get(r)
 
 
 class TestStickyCookieState:
     def _response(self, cookie, host):
         s = flow.StickyCookieState(filt.parse(".*"))
-        f = tutils.tflow(req=tutils.treq(host=host, port=80), resp=True)
-        f.response.headers["Set-Cookie"] = [cookie]
+        f = tutils.tflow(req=netlib.tutils.treq(host=host, port=80), resp=True)
+        f.response.headers["Set-Cookie"] = cookie
         s.handle_response(f)
         return s, f
 
@@ -72,13 +75,13 @@ class TestStickyAuthState:
     def test_handle_response(self):
         s = flow.StickyAuthState(filt.parse(".*"))
         f = tutils.tflow(resp=True)
-        f.request.headers["authorization"] = ["foo"]
+        f.request.headers["authorization"] = "foo"
         s.handle_request(f)
         assert "address" in s.hosts
 
         f = tutils.tflow(resp=True)
         s.handle_request(f)
-        assert f.request.headers["authorization"] == ["foo"]
+        assert f.request.headers["authorization"] == "foo"
 
 
 class TestClientPlaybackState:
@@ -130,7 +133,7 @@ class TestServerPlaybackState:
 
         assert s._hash(r)
         assert s._hash(r) == s._hash(r2)
-        r.request.headers["foo"] = ["bar"]
+        r.request.headers["foo"] = "bar"
         assert s._hash(r) == s._hash(r2)
         r.request.path = "voing"
         assert s._hash(r) != s._hash(r2)
@@ -150,12 +153,12 @@ class TestServerPlaybackState:
             None,
             False)
         r = tutils.tflow(resp=True)
-        r.request.headers["foo"] = ["bar"]
+        r.request.headers["foo"] = "bar"
         r2 = tutils.tflow(resp=True)
         assert not s._hash(r) == s._hash(r2)
-        r2.request.headers["foo"] = ["bar"]
+        r2.request.headers["foo"] = "bar"
         assert s._hash(r) == s._hash(r2)
-        r2.request.headers["oink"] = ["bar"]
+        r2.request.headers["oink"] = "bar"
         assert s._hash(r) == s._hash(r2)
 
         r = tutils.tflow(resp=True)
@@ -164,10 +167,10 @@ class TestServerPlaybackState:
 
     def test_load(self):
         r = tutils.tflow(resp=True)
-        r.request.headers["key"] = ["one"]
+        r.request.headers["key"] = "one"
 
         r2 = tutils.tflow(resp=True)
-        r2.request.headers["key"] = ["two"]
+        r2.request.headers["key"] = "two"
 
         s = flow.ServerPlaybackState(
             None, [
@@ -176,21 +179,21 @@ class TestServerPlaybackState:
         assert len(s.fmap.keys()) == 1
 
         n = s.next_flow(r)
-        assert n.request.headers["key"] == ["one"]
+        assert n.request.headers["key"] == "one"
         assert s.count() == 1
 
         n = s.next_flow(r)
-        assert n.request.headers["key"] == ["two"]
+        assert n.request.headers["key"] == "two"
         assert s.count() == 0
 
         assert not s.next_flow(r)
 
     def test_load_with_nopop(self):
         r = tutils.tflow(resp=True)
-        r.request.headers["key"] = ["one"]
+        r.request.headers["key"] = "one"
 
         r2 = tutils.tflow(resp=True)
-        r2.request.headers["key"] = ["two"]
+        r2.request.headers["key"] = "two"
 
         s = flow.ServerPlaybackState(
             None, [
@@ -221,12 +224,10 @@ class TestServerPlaybackState:
             None, [], False, False, None, False, [
                 "param1", "param2"], False)
         r = tutils.tflow(resp=True)
-        r.request.headers[
-            "Content-Type"] = ["application/x-www-form-urlencoded"]
+        r.request.headers["Content-Type"] = "application/x-www-form-urlencoded"
         r.request.content = "paramx=x&param1=1"
         r2 = tutils.tflow(resp=True)
-        r2.request.headers[
-            "Content-Type"] = ["application/x-www-form-urlencoded"]
+        r2.request.headers["Content-Type"] = "application/x-www-form-urlencoded"
         r2.request.content = "paramx=x&param1=1"
         # same parameters
         assert s._hash(r) == s._hash(r2)
@@ -251,10 +252,10 @@ class TestServerPlaybackState:
             None, [], False, False, None, False, [
                 "param1", "param2"], False)
         r = tutils.tflow(resp=True)
-        r.request.headers["Content-Type"] = ["application/json"]
+        r.request.headers["Content-Type"] = "application/json"
         r.request.content = '{"param1":"1"}'
         r2 = tutils.tflow(resp=True)
-        r2.request.headers["Content-Type"] = ["application/json"]
+        r2.request.headers["Content-Type"] = "application/json"
         r2.request.content = '{"param1":"1"}'
         # same content
         assert s._hash(r) == s._hash(r2)
@@ -268,12 +269,10 @@ class TestServerPlaybackState:
             None, [], False, False, None, True, [
                 "param1", "param2"], False)
         r = tutils.tflow(resp=True)
-        r.request.headers[
-            "Content-Type"] = ["application/x-www-form-urlencoded"]
+        r.request.headers["Content-Type"] = "application/x-www-form-urlencoded"
         r.request.content = "paramx=y"
         r2 = tutils.tflow(resp=True)
-        r2.request.headers[
-            "Content-Type"] = ["application/x-www-form-urlencoded"]
+        r2.request.headers["Content-Type"] = "application/x-www-form-urlencoded"
         r2.request.content = "paramx=x"
         # same parameters
         assert s._hash(r) == s._hash(r2)
@@ -339,7 +338,7 @@ class TestServerPlaybackState:
         assert s._hash(r) == s._hash(r2)
 
 
-class TestFlow:
+class TestFlow(object):
     def test_copy(self):
         f = tutils.tflow(resp=True)
         a0 = f.get_state()
@@ -380,7 +379,7 @@ class TestFlow:
 
     def test_backup(self):
         f = tutils.tflow()
-        f.response = tutils.tresp()
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp())
         f.request.content = "foo"
         assert not f.modified()
         f.backup()
@@ -399,13 +398,13 @@ class TestFlow:
     def test_getset_state(self):
         f = tutils.tflow(resp=True)
         state = f.get_state()
-        assert f.get_state() == protocol.http.HTTPFlow.from_state(
+        assert f.get_state() == HTTPFlow.from_state(
             state).get_state()
 
         f.response = None
         f.error = Error("error")
         state = f.get_state()
-        assert f.get_state() == protocol.http.HTTPFlow.from_state(
+        assert f.get_state() == HTTPFlow.from_state(
             state).get_state()
 
         f2 = f.copy()
@@ -457,17 +456,17 @@ class TestFlow:
 
     def test_replace(self):
         f = tutils.tflow(resp=True)
-        f.request.headers["foo"] = ["foo"]
+        f.request.headers["foo"] = "foo"
         f.request.content = "afoob"
 
-        f.response.headers["foo"] = ["foo"]
+        f.response.headers["foo"] = "foo"
         f.response.content = "afoob"
 
         assert f.replace("foo", "bar") == 6
 
-        assert f.request.headers["bar"] == ["bar"]
+        assert f.request.headers["bar"] == "bar"
         assert f.request.content == "abarb"
-        assert f.response.headers["bar"] == ["bar"]
+        assert f.response.headers["bar"] == "bar"
         assert f.response.content == "abarb"
 
     def test_replace_encoded(self):
@@ -513,16 +512,16 @@ class TestState:
         assert c.add_flow(newf)
         assert c.active_flow_count() == 2
 
-        f.response = tutils.tresp()
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp())
         assert c.update_flow(f)
         assert c.flow_count() == 2
         assert c.active_flow_count() == 1
 
-        _ = tutils.tresp()
+        _ = HTTPResponse.wrap(netlib.tutils.tresp())
         assert not c.update_flow(None)
         assert c.active_flow_count() == 1
 
-        newf.response = tutils.tresp()
+        newf.response = HTTPResponse.wrap(netlib.tutils.tresp())
         assert c.update_flow(newf)
         assert c.active_flow_count() == 0
 
@@ -554,7 +553,7 @@ class TestState:
         c.set_limit("~s")
         assert c.limit_txt == "~s"
         assert len(c.view) == 0
-        f.response = tutils.tresp()
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp())
         c.update_flow(f)
         assert len(c.view) == 1
         c.set_limit(None)
@@ -586,7 +585,7 @@ class TestState:
     def _add_response(self, state):
         f = tutils.tflow()
         state.add_flow(f)
-        f.response = tutils.tresp()
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp())
         state.update_flow(f)
 
     def _add_error(self, state):
@@ -653,7 +652,7 @@ class TestSerialize:
 
         f2 = l[0]
         assert f2.get_state() == f.get_state()
-        assert f2.request.assemble() == f.request.assemble()
+        assert f2.request == f.request
 
     def test_load_flows(self):
         r = self._treader()
@@ -667,11 +666,8 @@ class TestSerialize:
         s = flow.State()
         conf = ProxyConfig(
             mode="reverse",
-            upstream_server=[
-                True,
-                True,
-                "use-this-domain",
-                80])
+            upstream_server=("https", ("use-this-domain", 80))
+        )
         fm = flow.FlowMaster(DummyServer(conf), s)
         fm.load_flows(r)
         assert s.flows[0].request.host == "use-this-domain"
@@ -682,11 +678,11 @@ class TestSerialize:
         w = flow.FilteredFlowWriter(sio, fl)
 
         f = tutils.tflow(resp=True)
-        f.response.code = 200
+        f.response.status_code = 200
         w.add(f)
 
         f = tutils.tflow(resp=True)
-        f.response.code = 201
+        f.response.status_code = 201
         w.add(f)
 
         sio.seek(0)
@@ -804,11 +800,11 @@ class TestFlowMaster:
         fm.anticomp = True
         f = tutils.tflow(req=None)
         fm.handle_clientconnect(f.client_conn)
-        f.request = tutils.treq()
+        f.request = HTTPRequest.wrap(netlib.tutils.treq())
         fm.handle_request(f)
         assert s.flow_count() == 1
 
-        f.response = tutils.tresp()
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp())
         fm.handle_response(f)
         assert not fm.handle_response(None)
         assert s.flow_count() == 1
@@ -853,7 +849,7 @@ class TestFlowMaster:
         s = flow.State()
 
         f = tutils.tflow()
-        f.response = tutils.tresp(f.request)
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp(content=f.request))
         pb = [f]
 
         fm = flow.FlowMaster(None, s)
@@ -907,7 +903,7 @@ class TestFlowMaster:
     def test_server_playback_kill(self):
         s = flow.State()
         f = tutils.tflow()
-        f.response = tutils.tresp(f.request)
+        f.response = HTTPResponse.wrap(netlib.tutils.tresp(content=f.request))
         pb = [f]
         fm = flow.FlowMaster(None, s)
         fm.refresh_server_playback = True
@@ -938,14 +934,14 @@ class TestFlowMaster:
 
         fm.set_stickycookie(".*")
         f = tutils.tflow(resp=True)
-        f.response.headers["set-cookie"] = ["foo=bar"]
+        f.response.headers["set-cookie"] = "foo=bar"
         fm.handle_request(f)
         fm.handle_response(f)
         assert fm.stickycookie_state.jar
         assert not "cookie" in f.request.headers
         f = f.copy()
         fm.handle_request(f)
-        assert f.request.headers["cookie"] == ["foo=bar"]
+        assert f.request.headers["cookie"] == "foo=bar"
 
     def test_stickyauth(self):
         s = flow.State()
@@ -958,14 +954,14 @@ class TestFlowMaster:
 
         fm.set_stickyauth(".*")
         f = tutils.tflow(resp=True)
-        f.request.headers["authorization"] = ["foo"]
+        f.request.headers["authorization"] = "foo"
         fm.handle_request(f)
 
         f = tutils.tflow(resp=True)
         assert fm.stickyauth_state.hosts
         assert not "authorization" in f.request.headers
         fm.handle_request(f)
-        assert f.request.headers["authorization"] == ["foo"]
+        assert f.request.headers["authorization"] == "foo"
 
     def test_stream(self):
         with tutils.tmpdir() as tdir:
@@ -1002,21 +998,11 @@ class TestRequest:
         r.url = u
         tutils.raises(ValueError, setattr, r, "url", "")
         assert r.url == u
-        assert r.assemble()
-        assert r.size() == len(r.assemble())
-
         r2 = r.copy()
         assert r.get_state() == r2.get_state()
 
-        r.content = None
-        assert r.assemble()
-        assert r.size() == len(r.assemble())
-
-        r.content = CONTENT_MISSING
-        tutils.raises("Cannot assemble flow with CONTENT_MISSING", r.assemble)
-
     def test_get_url(self):
-        r = tutils.treq()
+        r = HTTPRequest.wrap(netlib.tutils.treq())
 
         assert r.url == "http://address:22/path"
 
@@ -1031,13 +1017,13 @@ class TestRequest:
         r.port = 22
         assert r.url == "https://address:22/path"
 
-        assert r.pretty_url(True) == "https://address:22/path"
-        r.headers["Host"] = ["foo.com"]
-        assert r.pretty_url(False) == "https://address:22/path"
-        assert r.pretty_url(True) == "https://foo.com:22/path"
+        assert r.pretty_url == "https://address:22/path"
+        r.headers["Host"] = "foo.com"
+        assert r.url == "https://address:22/path"
+        assert r.pretty_url == "https://foo.com:22/path"
 
     def test_path_components(self):
-        r = tutils.treq()
+        r = HTTPRequest.wrap(netlib.tutils.treq())
         r.path = "/"
         assert r.get_path_components() == []
         r.path = "/foo/bar"
@@ -1057,21 +1043,19 @@ class TestRequest:
 
     def test_getset_form_urlencoded(self):
         d = odict.ODict([("one", "two"), ("three", "four")])
-        r = tutils.treq(content=utils.urlencode(d.lst))
-        r.headers["content-type"] = [protocol.http.HDR_FORM_URLENCODED]
+        r = HTTPRequest.wrap(netlib.tutils.treq(content=netlib.utils.urlencode(d.lst)))
+        r.headers["content-type"] = "application/x-www-form-urlencoded"
         assert r.get_form_urlencoded() == d
 
         d = odict.ODict([("x", "y")])
         r.set_form_urlencoded(d)
         assert r.get_form_urlencoded() == d
 
-        r.headers["content-type"] = ["foo"]
+        r.headers["content-type"] = "foo"
         assert not r.get_form_urlencoded()
 
     def test_getset_query(self):
-        h = odict.ODictCaseless()
-
-        r = tutils.treq()
+        r = HTTPRequest.wrap(netlib.tutils.treq())
         r.path = "/foo?x=y&a=b"
         q = r.get_query()
         assert q.lst == [("x", "y"), ("a", "b")]
@@ -1093,125 +1077,76 @@ class TestRequest:
         assert r.get_query() == qv
 
     def test_anticache(self):
-        h = odict.ODictCaseless()
-        r = tutils.treq()
-        r.headers = h
-        h["if-modified-since"] = ["test"]
-        h["if-none-match"] = ["test"]
+        r = HTTPRequest.wrap(netlib.tutils.treq())
+        r.headers = Headers()
+        r.headers["if-modified-since"] = "test"
+        r.headers["if-none-match"] = "test"
         r.anticache()
         assert not "if-modified-since" in r.headers
         assert not "if-none-match" in r.headers
 
     def test_replace(self):
-        r = tutils.treq()
+        r = HTTPRequest.wrap(netlib.tutils.treq())
         r.path = "path/foo"
-        r.headers["Foo"] = ["fOo"]
+        r.headers["Foo"] = "fOo"
         r.content = "afoob"
         assert r.replace("foo(?i)", "boo") == 4
         assert r.path == "path/boo"
         assert not "foo" in r.content
-        assert r.headers["boo"] == ["boo"]
+        assert r.headers["boo"] == "boo"
 
     def test_constrain_encoding(self):
-        r = tutils.treq()
-        r.headers["accept-encoding"] = ["gzip", "oink"]
+        r = HTTPRequest.wrap(netlib.tutils.treq())
+        r.headers["accept-encoding"] = "gzip, oink"
         r.constrain_encoding()
         assert "oink" not in r.headers["accept-encoding"]
 
-    def test_decodeencode(self):
-        r = tutils.treq()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        r.decode()
-        assert not r.headers["content-encoding"]
-        assert r.content == "falafel"
-
-        r = tutils.treq()
-        r.content = "falafel"
-        assert not r.decode()
-
-        r = tutils.treq()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        r.encode("identity")
-        assert r.headers["content-encoding"] == ["identity"]
-        assert r.content == "falafel"
-
-        r = tutils.treq()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        r.encode("gzip")
-        assert r.headers["content-encoding"] == ["gzip"]
-        assert r.content != "falafel"
-        r.decode()
-        assert not r.headers["content-encoding"]
-        assert r.content == "falafel"
+        r.headers.set_all("accept-encoding", ["gzip", "oink"])
+        r.constrain_encoding()
+        assert "oink" not in r.headers["accept-encoding"]
 
     def test_get_decoded_content(self):
-        r = tutils.treq()
+        r = HTTPRequest.wrap(netlib.tutils.treq())
         r.content = None
-        r.headers["content-encoding"] = ["identity"]
+        r.headers["content-encoding"] = "identity"
         assert r.get_decoded_content() == None
 
         r.content = "falafel"
         r.encode("gzip")
         assert r.get_decoded_content() == "falafel"
 
-    def test_header_size(self):
-        h = odict.ODictCaseless()
-        h["headername"] = ["headervalue"]
-        r = tutils.treq()
-        r.headers = h
-        raw = r._assemble_headers()
-        assert len(raw) == 62
-
     def test_get_content_type(self):
-        h = odict.ODictCaseless()
-        h["Content-Type"] = ["text/plain"]
-        resp = tutils.tresp()
-        resp.headers = h
-        assert resp.headers.get_first("content-type") == "text/plain"
+        resp = HTTPResponse.wrap(netlib.tutils.tresp())
+        resp.headers = Headers(content_type="text/plain")
+        assert resp.headers["content-type"] == "text/plain"
 
 
 class TestResponse:
     def test_simple(self):
         f = tutils.tflow(resp=True)
         resp = f.response
-        assert resp.assemble()
-        assert resp.size() == len(resp.assemble())
-
         resp2 = resp.copy()
         assert resp2.get_state() == resp.get_state()
 
-        resp.content = None
-        assert resp.assemble()
-        assert resp.size() == len(resp.assemble())
-
-        resp.content = CONTENT_MISSING
-        tutils.raises(
-            "Cannot assemble flow with CONTENT_MISSING",
-            resp.assemble)
-
     def test_refresh(self):
-        r = tutils.tresp()
+        r = HTTPResponse.wrap(netlib.tutils.tresp())
         n = time.time()
-        r.headers["date"] = [email.utils.formatdate(n)]
+        r.headers["date"] = email.utils.formatdate(n)
         pre = r.headers["date"]
         r.refresh(n)
         assert pre == r.headers["date"]
         r.refresh(n + 60)
 
-        d = email.utils.parsedate_tz(r.headers["date"][0])
+        d = email.utils.parsedate_tz(r.headers["date"])
         d = email.utils.mktime_tz(d)
         # Weird that this is not exact...
         assert abs(60 - (d - n)) <= 1
 
-        r.headers[
-            "set-cookie"] = ["MOO=BAR; Expires=Tue, 08-Mar-2011 00:20:38 GMT; Path=foo.com; Secure"]
+        r.headers["set-cookie"] = "MOO=BAR; Expires=Tue, 08-Mar-2011 00:20:38 GMT; Path=foo.com; Secure"
         r.refresh()
 
     def test_refresh_cookie(self):
-        r = tutils.tresp()
+        r = HTTPResponse.wrap(netlib.tutils.tresp())
 
         # Invalid expires format, sent to us by Reddit.
         c = "rfoo=bar; Domain=reddit.com; expires=Thu, 31 Dec 2037 23:59:59 GMT; Path=/"
@@ -1220,54 +1155,23 @@ class TestResponse:
         c = "MOO=BAR; Expires=Tue, 08-Mar-2011 00:20:38 GMT; Path=foo.com; Secure"
         assert "00:21:38" in r._refresh_cookie(c, 60)
 
+        # https://github.com/mitmproxy/mitmproxy/issues/773
+        c = ">=A"
+        with tutils.raises(ValueError):
+            r._refresh_cookie(c, 60)
+
     def test_replace(self):
-        r = tutils.tresp()
-        r.headers["Foo"] = ["fOo"]
+        r = HTTPResponse.wrap(netlib.tutils.tresp())
+        r.headers["Foo"] = "fOo"
         r.content = "afoob"
         assert r.replace("foo(?i)", "boo") == 3
         assert not "foo" in r.content
-        assert r.headers["boo"] == ["boo"]
-
-    def test_decodeencode(self):
-        r = tutils.tresp()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        assert r.decode()
-        assert not r.headers["content-encoding"]
-        assert r.content == "falafel"
-
-        r = tutils.tresp()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        r.encode("identity")
-        assert r.headers["content-encoding"] == ["identity"]
-        assert r.content == "falafel"
-
-        r = tutils.tresp()
-        r.headers["content-encoding"] = ["identity"]
-        r.content = "falafel"
-        r.encode("gzip")
-        assert r.headers["content-encoding"] == ["gzip"]
-        assert r.content != "falafel"
-        assert r.decode()
-        assert not r.headers["content-encoding"]
-        assert r.content == "falafel"
-
-        r.headers["content-encoding"] = ["gzip"]
-        assert not r.decode()
-        assert r.content == "falafel"
-
-    def test_header_size(self):
-        r = tutils.tresp()
-        result = len(r._assemble_headers())
-        assert result == 44
+        assert r.headers["boo"] == "boo"
 
     def test_get_content_type(self):
-        h = odict.ODictCaseless()
-        h["Content-Type"] = ["text/plain"]
-        resp = tutils.tresp()
-        resp.headers = h
-        assert resp.headers.get_first("content-type") == "text/plain"
+        resp = HTTPResponse.wrap(netlib.tutils.tresp())
+        resp.headers = Headers(content_type="text/plain")
+        assert resp.headers["content-type"] == "text/plain"
 
 
 class TestError:
@@ -1306,27 +1210,6 @@ class TestClientConnection:
         assert c3.get_state() == c.get_state()
 
         assert str(c)
-
-
-def test_decoded():
-    r = tutils.treq()
-    assert r.content == "content"
-    assert not r.headers["content-encoding"]
-    r.encode("gzip")
-    assert r.headers["content-encoding"]
-    assert r.content != "content"
-    with decoded(r):
-        assert not r.headers["content-encoding"]
-        assert r.content == "content"
-    assert r.headers["content-encoding"]
-    assert r.content != "content"
-
-    with decoded(r):
-        r.content = "foo"
-
-    assert r.content != "foo"
-    r.decode()
-    assert r.content == "foo"
 
 
 def test_replacehooks():
@@ -1413,18 +1296,18 @@ def test_setheaders():
     h.add("~s", "one", "two")
     h.add("~s", "one", "three")
     f = tutils.tflow(resp=True)
-    f.request.headers["one"] = ["xxx"]
-    f.response.headers["one"] = ["xxx"]
+    f.request.headers["one"] = "xxx"
+    f.response.headers["one"] = "xxx"
     h.run(f)
-    assert f.request.headers["one"] == ["xxx"]
-    assert f.response.headers["one"] == ["two", "three"]
+    assert f.request.headers["one"] == "xxx"
+    assert f.response.headers.get_all("one") == ["two", "three"]
 
     h.clear()
     h.add("~q", "one", "two")
     h.add("~q", "one", "three")
     f = tutils.tflow()
-    f.request.headers["one"] = ["xxx"]
+    f.request.headers["one"] = "xxx"
     h.run(f)
-    assert f.request.headers["one"] == ["two", "three"]
+    assert f.request.headers.get_all("one") == ["two", "three"]
 
     assert not h.add("~", "foo", "bar")

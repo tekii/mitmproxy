@@ -35,7 +35,6 @@ from __future__ import absolute_import
 import re
 import sys
 import pyparsing as pp
-from .protocol.http import decoded
 
 
 class _Token:
@@ -78,17 +77,19 @@ class FResp(_Action):
 
 
 class _Rex(_Action):
+    flags = 0
+
     def __init__(self, expr):
         self.expr = expr
         try:
-            self.re = re.compile(self.expr)
+            self.re = re.compile(self.expr, self.flags)
         except:
             raise ValueError("Cannot compile expression.")
 
 
 def _check_content_type(expr, o):
-    val = o.headers["content-type"]
-    if val and re.search(expr, val[0]):
+    val = o.headers.get("content-type")
+    if val and re.search(expr, val):
         return True
     return False
 
@@ -146,11 +147,12 @@ class FResponseContentType(_Rex):
 class FHead(_Rex):
     code = "h"
     help = "Header"
+    flags = re.MULTILINE
 
     def __call__(self, f):
-        if f.request.headers.match_re(self.expr):
+        if f.request and self.re.search(str(f.request.headers)):
             return True
-        elif f.response and f.response.headers.match_re(self.expr):
+        if f.response and self.re.search(str(f.response.headers)):
             return True
         return False
 
@@ -158,18 +160,20 @@ class FHead(_Rex):
 class FHeadRequest(_Rex):
     code = "hq"
     help = "Request header"
+    flags = re.MULTILINE
 
     def __call__(self, f):
-        if f.request.headers.match_re(self.expr):
+        if f.request and self.re.search(str(f.request.headers)):
             return True
 
 
 class FHeadResponse(_Rex):
     code = "hs"
     help = "Response header"
+    flags = re.MULTILINE
 
     def __call__(self, f):
-        if f.response and f.response.headers.match_re(self.expr):
+        if f.response and self.re.search(str(f.response.headers)):
             return True
 
 
@@ -179,13 +183,11 @@ class FBod(_Rex):
 
     def __call__(self, f):
         if f.request and f.request.content:
-            with decoded(f.request):
-                if re.search(self.expr, f.request.content):
-                    return True
+            if self.re.search(f.request.get_decoded_content()):
+                return True
         if f.response and f.response.content:
-            with decoded(f.response):
-                if re.search(self.expr, f.response.content):
-                    return True
+            if self.re.search(f.response.get_decoded_content()):
+                return True
         return False
 
 
@@ -195,9 +197,8 @@ class FBodRequest(_Rex):
 
     def __call__(self, f):
         if f.request and f.request.content:
-            with decoded(f.request):
-                if re.search(self.expr, f.request.content):
-                    return True
+            if self.re.search(f.request.get_decoded_content()):
+                return True
 
 
 class FBodResponse(_Rex):
@@ -206,25 +207,26 @@ class FBodResponse(_Rex):
 
     def __call__(self, f):
         if f.response and f.response.content:
-            with decoded(f.response):
-                if re.search(self.expr, f.response.content):
-                    return True
+            if self.re.search(f.response.get_decoded_content()):
+                return True
 
 
 class FMethod(_Rex):
     code = "m"
     help = "Method"
+    flags = re.IGNORECASE
 
     def __call__(self, f):
-        return bool(re.search(self.expr, f.request.method, re.IGNORECASE))
+        return bool(self.re.search(f.request.method))
 
 
 class FDomain(_Rex):
     code = "d"
     help = "Domain"
+    flags = re.IGNORECASE
 
     def __call__(self, f):
-        return bool(re.search(self.expr, f.request.host, re.IGNORECASE))
+        return bool(self.re.search(f.request.host))
 
 
 class FUrl(_Rex):
@@ -239,7 +241,23 @@ class FUrl(_Rex):
         return klass(*toks)
 
     def __call__(self, f):
-        return re.search(self.expr, f.request.url)
+        return self.re.search(f.request.url)
+
+
+class FSrc(_Rex):
+    code = "src"
+    help = "Match source address"
+
+    def __call__(self, f):
+        return f.client_conn.address and self.re.search(repr(f.client_conn.address))
+
+
+class FDst(_Rex):
+    code = "dst"
+    help = "Match destination address"
+
+    def __call__(self, f):
+        return f.server_conn.address and self.re.search(repr(f.server_conn.address))
 
 
 class _Int(_Action):
@@ -252,7 +270,7 @@ class FCode(_Int):
     help = "HTTP response code"
 
     def __call__(self, f):
-        if f.response and f.response.code == self.num:
+        if f.response and f.response.status_code == self.num:
             return True
 
 
@@ -313,6 +331,8 @@ filt_rex = [
     FRequestContentType,
     FResponseContentType,
     FContentType,
+    FSrc,
+    FDst,
 ]
 filt_int = [
     FCode
@@ -324,7 +344,7 @@ def _make():
     # ones.
     parts = []
     for klass in filt_unary:
-        f = pp.Literal("~%s" % klass.code)
+        f = pp.Literal("~%s" % klass.code) + pp.WordEnd()
         f.setParseAction(klass.make)
         parts.append(f)
 
@@ -333,12 +353,12 @@ def _make():
         pp.QuotedString("\"", escChar='\\') |\
         pp.QuotedString("'", escChar='\\')
     for klass in filt_rex:
-        f = pp.Literal("~%s" % klass.code) + rex.copy()
+        f = pp.Literal("~%s" % klass.code) + pp.WordEnd() + rex.copy()
         f.setParseAction(klass.make)
         parts.append(f)
 
     for klass in filt_int:
-        f = pp.Literal("~%s" % klass.code) + pp.Word(pp.nums)
+        f = pp.Literal("~%s" % klass.code) + pp.WordEnd() + pp.Word(pp.nums)
         f.setParseAction(klass.make)
         parts.append(f)
 

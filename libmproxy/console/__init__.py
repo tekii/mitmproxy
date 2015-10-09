@@ -14,9 +14,9 @@ import traceback
 import urwid
 import weakref
 
-from .. import controller, flow, script
+from .. import controller, flow, script, contentviews
 from . import flowlist, flowview, help, window, signals, options
-from . import grideditor, palettes, contentview, statusbar, palettepicker
+from . import grideditor, palettes, statusbar, palettepicker
 
 EVENTLOG_SIZE = 500
 
@@ -26,7 +26,7 @@ class ConsoleState(flow.State):
         flow.State.__init__(self)
         self.focus = None
         self.follow_focus = None
-        self.default_body_view = contentview.get("Auto")
+        self.default_body_view = contentviews.get("Auto")
         self.flowsettings = weakref.WeakKeyDictionary()
         self.last_search = None
 
@@ -48,6 +48,7 @@ class ConsoleState(flow.State):
             self.set_focus(0)
         elif self.follow_focus:
             self.set_focus(len(self.view) - 1)
+        self.set_flow_marked(f, False)
         return f
 
     def update_flow(self, f):
@@ -100,9 +101,29 @@ class ConsoleState(flow.State):
         return ret
 
     def clear(self):
-        self.focus = None
+        marked_flows = []
+        for f in self.flows:
+            if self.flow_marked(f):
+                marked_flows.append(f)
+                
         super(ConsoleState, self).clear()
-
+        
+        for f in marked_flows:
+            self.add_flow(f)
+            self.set_flow_marked(f, True)
+        
+        if len(self.flows.views) == 0:
+            self.focus = None
+        else:
+            self.focus = 0
+        self.set_focus(self.focus)
+        
+    def flow_marked(self, flow):
+        return self.get_flow_setting(flow, "marked", False)
+    
+    def set_flow_marked(self, flow, marked):
+        self.add_flow_setting(flow, "marked", marked)
+        
 
 class Options(object):
     attributes = [
@@ -133,7 +154,8 @@ class Options(object):
         "wfile",
         "nopop",
         "palette",
-        "palette_transparent"
+        "palette_transparent",
+        "no_mouse"
     ]
 
     def __init__(self, **kwargs):
@@ -434,12 +456,12 @@ class ConsoleMaster(flow.FlowMaster):
 
     def run(self):
         self.ui = urwid.raw_display.Screen()
-        self.ui.set_mouse_tracking()
         self.ui.set_terminal_properties(256)
         self.set_palette(self.palette)
         self.loop = urwid.MainLoop(
             urwid.SolidFill("x"),
             screen = self.ui,
+            handle_mouse = not self.options.no_mouse,
         )
 
         self.server.start_slave(
@@ -591,6 +613,13 @@ class ConsoleMaster(flow.FlowMaster):
 
     def save_flows(self, path):
         return self._write_flows(path, self.state.view)
+    
+    def save_marked_flows(self, path):
+        marked_flows = []
+        for f in self.state.view:
+            if self.state.flow_marked(f):
+                marked_flows.append(f)
+        return self._write_flows(path, marked_flows)
 
     def load_flows_callback(self, path):
         if not path:
@@ -619,7 +648,7 @@ class ConsoleMaster(flow.FlowMaster):
         return self.state.set_intercept(txt)
 
     def change_default_display_mode(self, t):
-        v = contentview.get_by_shortcut(t)
+        v = contentviews.get_by_shortcut(t)
         self.state.default_body_view = v
         self.refresh_focus()
 

@@ -11,7 +11,9 @@ def test_load_scripts():
     tmaster = tservers.TestMaster(config.ProxyConfig())
 
     for f in scripts:
-        if "har_extractor" in f or "flowwriter" in f:
+        if "har_extractor" in f:
+            continue
+        if "flowwriter" in f:
             f += " -"
         if "iframe_injector" in f:
             f += " foo"  # one argument required
@@ -22,7 +24,7 @@ def test_load_scripts():
         try:
             s = script.Script(f, tmaster)  # Loads the script file.
         except Exception as v:
-            if not "ImportError" in str(v):
+            if "ImportError" not in str(v):
                 raise
         else:
             s.unload()

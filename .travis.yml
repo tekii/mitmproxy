@@ -1,13 +1,10 @@
+sudo: false
 language: python
 
-sudo: false
-
-python:
-  - "2.7"
-  - pypy
-
 matrix:
+  fast_finish: true
   include:
+    - python: 2.7
     - python: 2.7
       env: OPENSSL=1.0.2
       addons:
@@ -18,6 +15,10 @@ matrix:
             - debian-sid
           packages:
             - libssl-dev
+    - python: 2.7
+      env: DOCS=1
+      script: 'cd docs && make html'
+    - python: pypy
     - python: pypy
       env: OPENSSL=1.0.2
       addons:
@@ -28,15 +29,19 @@ matrix:
             - debian-sid
           packages:
             - libssl-dev
+  allow_failures:
+    # We allow pypy to fail until Travis fixes their infrastructure to a pypy
+    # with a recent enought CFFI library to run cryptography 1.0+.
+    - python: pypy
 
 install:
-  - "pip install --src . -r requirements.txt"
+  - "pip install -r requirements.txt"
 
 before_script:
   - "openssl version -a"
 
 script:
-  - "nosetests --with-cov --cov-report term-missing"
+  - "py.test -n 4 --cov libmproxy"
 
 after_success:
   - coveralls
@@ -47,19 +52,21 @@ notifications:
       - "irc.oftc.net#mitmproxy"
     on_success: change
     on_failure: always
+  slack:
+    rooms:
+      - mitmproxy:YaDGC9Gt9TEM7o8zkC2OLNsu
+    on_success: change
+    on_failure: always
 
 # exclude cryptography from cache
 # it depends on libssl-dev version
 # which needs to be compiled specifically to each version
 before_cache:
   - pip uninstall -y cryptography
-  - rm -rf /home/travis/virtualenv/python2.7.9/lib/python2.7/site-packages/cryptography/
-  - rm -rf /home/travis/virtualenv/pypy-2.5.0/site-packages/cryptography/
-  - rm /home/travis/virtualenv/python2.7.9/lib/python2.7/site-packages/pip/_vendor/requests/packages/urllib3/contrib/pyopenssl.py
-  - rm /home/travis/virtualenv/pypy-2.5.0/site-packages/pip/_vendor/requests/packages/urllib3/contrib/pyopenssl.py
 
 cache:
   directories:
+    - $HOME/.cache/pip
     - /home/travis/virtualenv/python2.7.9/lib/python2.7/site-packages
     - /home/travis/virtualenv/python2.7.9/bin
     - /home/travis/virtualenv/pypy-2.5.0/site-packages

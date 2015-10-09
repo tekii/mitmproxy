@@ -1,12 +1,17 @@
 from __future__ import absolute_import
 import os
+import traceback
 import sys
+
 import urwid
+
 from netlib import odict
-from . import common, grideditor, contentview, signals, searchable, tabs
+from netlib.http import CONTENT_MISSING, Headers
+from . import common, grideditor, signals, searchable, tabs
 from . import flowdetailview
-from .. import utils, controller
-from ..protocol.http import HTTPRequest, HTTPResponse, CONTENT_MISSING, decoded
+from .. import utils, controller, contentviews
+from ..models import HTTPRequest, HTTPResponse, decoded
+from ..exceptions import ContentViewException
 
 
 class SearchError(Exception):
@@ -162,10 +167,10 @@ class FlowView(tabs.Tabs):
         if flow == self.flow:
             self.show()
 
-    def content_view(self, viewmode, conn):
-        if conn.content == CONTENT_MISSING:
+    def content_view(self, viewmode, message):
+        if message.content == CONTENT_MISSING:
             msg, body = "", [urwid.Text([("error", "[content missing]")])]
-            return (msg, body)
+            return msg, body
         else:
             full = self.state.get_flow_setting(
                 self.flow,
@@ -175,16 +180,45 @@ class FlowView(tabs.Tabs):
             if full:
                 limit = sys.maxsize
             else:
-                limit = contentview.VIEW_CUTOFF
-            description, text_objects = cache.get(
-                contentview.get_content_view,
+                limit = contentviews.VIEW_CUTOFF
+            return cache.get(
+                self._get_content_view,
                 viewmode,
-                tuple(tuple(i) for i in conn.headers.lst),
-                conn.content,
+                message,
                 limit,
-                isinstance(conn, HTTPRequest)
+                (bytes(message.headers), message.content)  # Cache invalidation
             )
-            return (description, text_objects)
+
+    def _get_content_view(self, viewmode, message, max_lines, _):
+
+        try:
+            description, lines = contentviews.get_content_view(
+                viewmode, message.content, headers=message.headers
+            )
+        except ContentViewException:
+            s = "Content viewer failed: \n" + traceback.format_exc()
+            signals.add_event(s, "error")
+            description, lines = contentviews.get_content_view(
+                contentviews.get("Raw"), message.content, headers=message.headers
+            )
+            description = description.replace("Raw", "Couldn't parse: falling back to Raw")
+
+        # Give hint that you have to tab for the response.
+        if description == "No content" and isinstance(message, HTTPRequest):
+            description = "No request content (press tab to view response)"
+
+        text_objects = []
+        for line in lines:
+            text_objects.append(urwid.Text(line))
+            if len(text_objects) == max_lines:
+                text_objects.append(urwid.Text([
+                    ("highlight", "Stopped displaying data after %d lines. Press " % max_lines),
+                    ("key", "f"),
+                    ("highlight", " to load all data.")
+                ]))
+                break
+
+        return description, text_objects
 
     def viewmode_get(self):
         override = self.state.get_flow_setting(
@@ -196,7 +230,7 @@ class FlowView(tabs.Tabs):
     def conn_text(self, conn):
         if conn:
             txt = common.format_keyvals(
-                [(h + ":", v) for (h, v) in conn.headers.lst],
+                [(h + ":", v) for (h, v) in conn.headers.fields],
                 key = "header",
                 val = "text"
             )
@@ -208,9 +242,7 @@ class FlowView(tabs.Tabs):
                     [
                         ("heading", msg),
                     ]
-                )
-            ]
-            cols.append(
+                ),
                 urwid.Text(
                     [
                         " ",
@@ -220,7 +252,7 @@ class FlowView(tabs.Tabs):
                     ],
                     align="right"
                 )
-            )
+            ]
             title = urwid.AttrWrap(urwid.Columns(cols), "heading")
 
             txt.append(title)
@@ -267,7 +299,7 @@ class FlowView(tabs.Tabs):
     def set_resp_code(self, code):
         response = self.flow.response
         try:
-            response.code = int(code)
+            response.status_code = int(code)
         except ValueError:
             return None
         import BaseHTTPServer
@@ -281,8 +313,8 @@ class FlowView(tabs.Tabs):
         response.msg = msg
         signals.flow_change.send(self, flow = self.flow)
 
-    def set_headers(self, lst, conn):
-        conn.headers = odict.ODictCaseless(lst)
+    def set_headers(self, fields, conn):
+        conn.headers = Headers(fields)
         signals.flow_change.send(self, flow = self.flow)
 
     def set_query(self, lst, conn):
@@ -326,8 +358,8 @@ class FlowView(tabs.Tabs):
         else:
             if not self.flow.response:
                 self.flow.response = HTTPResponse(
-                    self.flow.request.httpversion,
-                    200, "OK", odict.ODictCaseless(), ""
+                    self.flow.request.http_version,
+                    200, "OK", Headers(), ""
                 )
                 self.flow.response.reply = controller.DummyReply()
             message = self.flow.response
@@ -378,7 +410,7 @@ class FlowView(tabs.Tabs):
             self.master.view_grideditor(
                 grideditor.HeaderEditor(
                     self.master,
-                    message.headers.lst,
+                    message.headers.fields,
                     self.set_headers,
                     message
                 )
@@ -416,7 +448,7 @@ class FlowView(tabs.Tabs):
         elif part == "o":
             signals.status_prompt.send(
                 prompt = "Code",
-                text = str(message.code),
+                text = str(message.status_code),
                 callback = self.set_resp_code
             )
         elif part == "m":
@@ -452,7 +484,7 @@ class FlowView(tabs.Tabs):
         self.state.add_flow_setting(
             self.flow,
             (self.tab_offset, "prettyview"),
-            contentview.get_by_shortcut(t)
+            contentviews.get_by_shortcut(t)
         )
         signals.flow_change.send(self, flow = self.flow)
 
@@ -592,7 +624,7 @@ class FlowView(tabs.Tabs):
                     scope = "s"
                 common.ask_copy_part(scope, self.flow, self.master, self.state)
             elif key == "m":
-                p = list(contentview.view_prompts)
+                p = list(contentviews.view_prompts)
                 p.insert(0, ("Clear", "C"))
                 signals.status_prompt_onekey.send(
                     self,
@@ -613,8 +645,7 @@ class FlowView(tabs.Tabs):
                 key = None
             elif key == "v":
                 if conn.content:
-                    t = conn.headers["content-type"] or [None]
-                    t = t[0]
+                    t = conn.headers.get("content-type")
                     if "EDITOR" in os.environ or "PAGER" in os.environ:
                         self.master.spawn_external_viewer(conn.content, t)
                     else:
@@ -623,7 +654,7 @@ class FlowView(tabs.Tabs):
                         )
             elif key == "z":
                 self.flow.backup()
-                e = conn.headers.get_first("content-encoding", "identity")
+                e = conn.headers.get("content-encoding", "identity")
                 if e != "identity":
                     if not conn.decode():
                         signals.status_message.send(
